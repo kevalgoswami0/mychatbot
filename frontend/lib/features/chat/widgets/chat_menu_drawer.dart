@@ -118,9 +118,17 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
     final filteredConversations = ref.watch(filteredConversationsProvider);
     final searchQuery = ref.watch(historySearchQueryProvider);
     final currentPlan = ref.watch(subscriptionProvider);
+    final userSubAsync = ref.watch(userSubscriptionProvider);
+    final hasActiveSub = userSubAsync.value?.hasSubscription ?? false;
+    final planDisplayName = userSubAsync.value?.planName != null && userSubAsync.value!.planName.isNotEmpty
+        ? (userSubAsync.value!.planName.toLowerCase().contains('plan') 
+            ? userSubAsync.value!.planName 
+            : '${userSubAsync.value!.planName} Plan')
+        : currentPlan.name;
 
-    final userName = user?.name ?? 'Guest User';
-    final userEmail = user?.email ?? 'guest@novachat.ai';
+    final isAuthenticated = user != null;
+    final userName = (user?.name != null && user!.name.trim().isNotEmpty) ? user.name : 'User';
+    final userEmail = user?.email ?? '';
 
     return Drawer(
       backgroundColor: colors.background,
@@ -135,13 +143,24 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
           children: [
             // Header Bar with Close icon
             Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.md,
-                vertical: AppSpacing.xs,
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.md,
+                AppSpacing.sm,
+                AppSpacing.xs,
+                AppSpacing.xs,
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: colors.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                    ),
+                    child: Icon(Icons.menu_open_rounded, size: 18, color: colors.primary),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
                   Text(
                     'Menu',
                     style: AppTextStyles.titleMedium.copyWith(
@@ -149,90 +168,37 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
+                  const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.close_rounded, size: 22),
+                    tooltip: 'Close Menu',
                     onPressed: () => Navigator.of(context).pop(),
                   ),
                 ],
               ),
             ),
-            Divider(color: colors.border, height: 1),
+            Divider(color: colors.border.withValues(alpha: 0.6), height: 1),
 
-            // Top Buttons Section (Profile and New Chat)
+            // Top Primary Action: New Chat Button
             Padding(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              child: Column(
-                children: [
-                  // Button 1: Profile Button
-                  Material(
-                    color: colors.surface,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
-                      side: BorderSide(color: colors.border, width: 1),
-                    ),
-                    child: InkWell(
-                      onTap: () {
-                        Navigator.of(context).pop();
-                        context.push(AppRoutes.profilePath);
-                      },
-                      borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
-                      child: Padding(
-                        padding: const EdgeInsets.all(AppSpacing.sm + 2),
-                        child: Row(
-                          children: [
-                            AppAvatar(name: userName, size: 36),
-                            const SizedBox(width: AppSpacing.sm),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    userName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: AppTextStyles.bodyMedium.copyWith(
-                                      color: colors.textPrimary,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  Text(
-                                    userEmail,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: AppTextStyles.micro.copyWith(
-                                      color: colors.textSecondary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Icon(
-                              Icons.chevron_right_rounded,
-                              size: 20,
-                              color: colors.textSecondary,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.sm),
-
-                  // Button 2: New Chat Button
-                  AppButton(
-                    text: 'New Chat',
-                    icon: Icons.add_rounded,
-                    variant: AppButtonVariant.primary,
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                      widget.onNewChat();
-                    },
-                  ),
-                ],
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.md,
+                AppSpacing.md,
+                AppSpacing.md,
+                AppSpacing.sm,
+              ),
+              child: AppButton(
+                text: 'New Chat',
+                icon: Icons.add_rounded,
+                variant: AppButtonVariant.primary,
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  widget.onNewChat();
+                },
               ),
             ),
 
-            // History Section Header with prominent CHATS label & Search toggle icon
+            // History Section Header with prominent RECENT CHATS label & Search toggle icon
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
               child: Column(
@@ -242,12 +208,12 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        'CHATS',
-                        style: AppTextStyles.titleMedium.copyWith(
-                          color: colors.textPrimary,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 16,
-                          letterSpacing: 0.6,
+                        'RECENT CHATS',
+                        style: AppTextStyles.caption.copyWith(
+                          color: colors.textSecondary,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.8,
+                          fontSize: 11,
                         ),
                       ),
                       IconButton(
@@ -306,11 +272,10 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-                error: (err, _) => Center(
-                  child: Text(
-                    'Failed to load history',
-                    style: AppTextStyles.caption.copyWith(color: colors.error),
-                  ),
+                error: (err, _) => const EmptyState(
+                  icon: Icons.chat_bubble_outline_rounded,
+                  title: 'No chats yet',
+                  description: 'Start a conversation to see your history here.',
                 ),
                 data: (allConversations) {
                   if (allConversations.isEmpty) {
@@ -396,20 +361,92 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
               ),
             ),
 
-            // Bottom Utility Links (Subscriptions & Settings)
+            // Bottom Footer: User Profile, Subscription Status & Settings
             Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.md,
-                vertical: AppSpacing.xs,
+              padding: EdgeInsets.fromLTRB(
+                AppSpacing.sm,
+                AppSpacing.xs,
+                AppSpacing.sm,
+                context.bottomPadding > 0 ? context.bottomPadding : AppSpacing.xs,
               ),
               decoration: BoxDecoration(
                 color: colors.surface,
-                border: Border(top: BorderSide(color: colors.border, width: 1)),
+                border: Border(
+                  top: BorderSide(
+                    color: colors.border.withValues(alpha: 0.7),
+                    width: 1,
+                  ),
+                ),
               ),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Subscription pill button
-                  Expanded(
+                  // Profile Tile
+                  Material(
+                    color: Colors.transparent,
+                    borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+                    child: InkWell(
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        if (isAuthenticated) {
+                          context.push(AppRoutes.profilePath);
+                        } else {
+                          context.go(AppRoutes.authPath);
+                        }
+                      },
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.sm,
+                          vertical: AppSpacing.xs + 2,
+                        ),
+                        child: Row(
+                          children: [
+                            AppAvatar(name: userName, size: 36),
+                            const SizedBox(width: AppSpacing.sm),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    isAuthenticated ? userName : 'Not Signed In',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: AppTextStyles.bodyMedium.copyWith(
+                                      color: colors.textPrimary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  Text(
+                                    isAuthenticated ? userEmail : 'Tap to sign in',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: AppTextStyles.micro.copyWith(
+                                      color: colors.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Icon(
+                              Icons.chevron_right_rounded,
+                              size: 18,
+                              color: colors.textSecondary,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  Divider(
+                    color: colors.border.withValues(alpha: 0.5),
+                    height: 1,
+                  ),
+
+                  // Bottom Utilities: Subscription Badge
+                  Padding(
+                    padding: const EdgeInsets.only(top: AppSpacing.xxs),
                     child: InkWell(
                       onTap: () {
                         Navigator.of(context).pop();
@@ -418,16 +455,16 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
                       borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: AppSpacing.xs,
-                          vertical: AppSpacing.sm,
+                          horizontal: AppSpacing.sm,
+                          vertical: AppSpacing.xs,
                         ),
                         child: Row(
                           children: [
-                            Icon(Icons.auto_awesome_rounded, size: 18, color: colors.primary),
+                            Icon(Icons.auto_awesome_rounded, size: 16, color: colors.primary),
                             const SizedBox(width: AppSpacing.xs),
                             Expanded(
                               child: Text(
-                                currentPlan.name,
+                                planDisplayName,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: AppTextStyles.caption.copyWith(
@@ -436,19 +473,26 @@ class _ChatMenuDrawerState extends ConsumerState<ChatMenuDrawer> {
                                 ),
                               ),
                             ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: (hasActiveSub ? colors.success : colors.primary)
+                                    .withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                              ),
+                              child: Text(
+                                hasActiveSub ? 'ACTIVE' : 'UPGRADE',
+                                style: AppTextStyles.micro.copyWith(
+                                  color: hasActiveSub ? colors.success : colors.primary,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
                     ),
-                  ),
-                  // Settings icon button
-                  IconButton(
-                    icon: Icon(Icons.settings_outlined, size: 20, color: colors.textSecondary),
-                    tooltip: 'Settings',
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                      context.push(AppRoutes.settingsPath);
-                    },
                   ),
                 ],
               ),

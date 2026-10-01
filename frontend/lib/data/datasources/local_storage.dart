@@ -4,6 +4,7 @@ import '../../core/constants/app_constants.dart';
 import '../../core/utils/logger.dart';
 import '../models/conversation.dart';
 import '../models/message.dart';
+import '../models/subscription_plan.dart';
 import '../models/user_profile.dart';
 
 /// Clean local persistence service backed by SharedPreferences with robust JSON serialization.
@@ -33,14 +34,41 @@ class LocalStorage {
     return _prefs.getString(AppConstants.prefKeyThemeMode) ?? 'system';
   }
 
-  /// Save active subscription plan ID ('free', 'pro', 'ultra')
+  String get _currentUserId => loadUserProfile()?.id.toString() ?? 'guest';
+  String get _subscriptionKey => 'nova_storage_${_currentUserId}_subscription_plan';
+  String get _subscriptionDataKey => 'nova_storage_${_currentUserId}_subscription_data';
+  String get _conversationsKey => 'nova_storage_${_currentUserId}_conversations';
+  String _messagesKey(String conversationId) => 'nova_storage_${_currentUserId}_messages_$conversationId';
+
+  /// Save active subscription plan ID ('free', 'pro', 'ultra') scoped to current user
   Future<void> setSubscriptionPlan(String planId) async {
-    await _prefs.setString(AppConstants.prefKeySubscriptionPlan, planId);
+    await _prefs.setString(_subscriptionKey, planId);
   }
 
-  /// Get stored active subscription plan ID
+  /// Get stored active subscription plan ID for current user
   String getSubscriptionPlan() {
-    return _prefs.getString(AppConstants.prefKeySubscriptionPlan) ?? 'free';
+    return _prefs.getString(_subscriptionKey) ?? 'free';
+  }
+
+  /// Save full subscription status scoped to current user
+  Future<void> saveSubscriptionStatus(UserSubscriptionStatus? status) async {
+    if (status == null) {
+      await _prefs.remove(_subscriptionDataKey);
+    } else {
+      await _prefs.setString(_subscriptionDataKey, jsonEncode(status.toJson()));
+    }
+  }
+
+  /// Load cached subscription status scoped to current user
+  UserSubscriptionStatus? loadSubscriptionStatus() {
+    final raw = _prefs.getString(_subscriptionDataKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      return UserSubscriptionStatus.fromJson(map);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Save authenticated user profile
@@ -49,6 +77,9 @@ class LocalStorage {
       await _prefs.remove(AppConstants.prefKeyAuthUser);
       await _prefs.remove(AppConstants.prefKeyAccessToken);
       await _prefs.remove(AppConstants.prefKeyRefreshToken);
+      await _prefs.remove(AppConstants.prefKeySubscriptionPlan);
+      await _prefs.remove(_subscriptionKey);
+      await _prefs.remove(_subscriptionDataKey);
     } else {
       await _prefs.setString(AppConstants.prefKeyAuthUser, profile.toJson());
     }
@@ -74,9 +105,7 @@ class LocalStorage {
   /// Retrieve stored refresh token
   String? getRefreshToken() => _prefs.getString(AppConstants.prefKeyRefreshToken);
 
-  String get _currentUserId => loadUserProfile()?.id.toString() ?? 'guest';
-  String get _conversationsKey => 'nova_storage_${_currentUserId}_conversations';
-  String _messagesKey(String conversationId) => 'nova_storage_${_currentUserId}_messages_$conversationId';
+
 
   /// Load authenticated user profile
   UserProfile? loadUserProfile() {
@@ -118,7 +147,12 @@ class LocalStorage {
 
   /// Load messages for a specific conversation for current user
   List<Message> loadMessages(String conversationId) {
-    final raw = _prefs.getString(_messagesKey(conversationId));
+    String? raw = _prefs.getString(_messagesKey(conversationId));
+    if (raw == null || raw.isEmpty) {
+      // Fallback: check legacy key or guest key
+      raw = _prefs.getString('nova_storage_messages_$conversationId') ??
+          _prefs.getString('nova_storage_guest_messages_$conversationId');
+    }
     if (raw == null || raw.isEmpty) return [];
     try {
       final List<dynamic> list = json.decode(raw) as List<dynamic>;
@@ -154,5 +188,15 @@ class LocalStorage {
       await deleteMessages(c.id);
     }
     await _prefs.remove(_conversationsKey);
+    await _prefs.remove('nova_storage_guest_conversations');
+    await _prefs.remove('nova_storage_conversations');
+
+    // Also purge any orphaned conversation/message keys in storage
+    final allKeys = _prefs.getKeys();
+    for (final key in allKeys) {
+      if (key.contains('_conversations') || key.contains('_messages_')) {
+        await _prefs.remove(key);
+      }
+    }
   }
 }

@@ -22,11 +22,11 @@ class AppColors {
   static const Color darkSurface = Color(0xFF16181D);
   static const Color darkBorder = Color(0xFF262A31);
   static const Color darkPrimary = Color(0xFF3B82F6); // Vibrant Blue
-  static const Color darkOnPrimary = Color(0xFF0E0F13);
+  static const Color darkOnPrimary = Color(0xFFFFFFFF);
   static const Color darkTextPrimary = Color(0xFFF3F4F6);
   static const Color darkTextSecondary = Color(0xFF9CA3AF);
   static const Color darkUserBubble = Color(0xFF3B82F6);
-  static const Color darkUserBubbleText = Color(0xFF0E0F13);
+  static const Color darkUserBubbleText = Color(0xFFFFFFFF);
   static const Color darkBotBubble = Color(0xFF1D2026);
   static const Color darkBotBubbleText = Color(0xFFF3F4F6);
 

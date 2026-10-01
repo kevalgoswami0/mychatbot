@@ -6,6 +6,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
+# Load .env from backend directory explicitly so it works regardless of working directory
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 load_dotenv()
 
 
@@ -36,7 +38,7 @@ def verify_payment(
     razorpay_payment_id: str,
     razorpay_order_id: str,
     razorpay_signature: str
-):
+) -> bool:
     global client
     data = {
         "razorpay_payment_id": razorpay_payment_id,
@@ -46,11 +48,16 @@ def verify_payment(
 
     try:
         client.utility.verify_payment_signature(data)
+        return True
+    except razorpay.errors.SignatureVerificationError:
+        return False
     except Exception:
-        client = create_client()
-        client.utility.verify_payment_signature(data)
-
-    return True
+        try:
+            client = create_client()
+            client.utility.verify_payment_signature(data)
+            return True
+        except Exception:
+            return False
 
 
 def create_razorpay_order(amount: int, receipt: str):

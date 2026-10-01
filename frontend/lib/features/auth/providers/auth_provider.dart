@@ -12,11 +12,17 @@ class AuthNotifier extends AsyncNotifier<UserProfile?> {
   late final AuthRepository _authRepository;
   StreamSubscription<UserProfile?>? _authSubscription;
 
-  void _resetUserState() {
+  Future<void> _resetUserState() async {
     ref.read(activeConversationIdProvider.notifier).setActiveId(null);
     ref.read(messagesProvider.notifier).resetToEmpty();
-    ref.invalidate(conversationsProvider);
-    ref.invalidate(userSubscriptionProvider);
+    ref.read(conversationsProvider.notifier).clearLocal();
+    ref.read(userSubscriptionProvider.notifier).resetToFree();
+    try {
+      await ref.read(conversationsProvider.notifier).reload();
+    } catch (_) {}
+    try {
+      await ref.read(userSubscriptionProvider.notifier).refresh();
+    } catch (_) {}
   }
 
   @override
@@ -38,7 +44,7 @@ class AuthNotifier extends AsyncNotifier<UserProfile?> {
   Future<void> login(String email, String password) async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() => _authRepository.login(email, password));
-    _resetUserState();
+    await _resetUserState();
   }
 
   Future<void> signup(
@@ -51,24 +57,40 @@ class AuthNotifier extends AsyncNotifier<UserProfile?> {
     state = await AsyncValue.guard(
       () => _authRepository.signup(name, email, password, confirmPassword),
     );
-    _resetUserState();
+    await _resetUserState();
   }
 
   Future<void> continueAsGuest() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() => _authRepository.continueAsGuest());
-    _resetUserState();
+    await _resetUserState();
   }
 
   Future<void> logout() async {
     state = const AsyncLoading();
     await _authRepository.logout();
     state = const AsyncData(null);
-    _resetUserState();
+    await _resetUserState();
+  }
+
+  Future<void> deleteAccount() async {
+    state = const AsyncLoading();
+    try {
+      await _authRepository.deleteAccount();
+      state = const AsyncData(null);
+      await _resetUserState();
+    } catch (e, st) {
+      state = AsyncError(e, st);
+      rethrow;
+    }
   }
 
   Future<String> verifyEmail({required String email, required String otp}) async {
-    return await _authRepository.verifyEmail(email: email, otp: otp);
+    final result = await _authRepository.verifyEmail(email: email, otp: otp);
+    final verifiedUser = await _authRepository.getCurrentUser();
+    state = AsyncData(verifiedUser);
+    await _resetUserState();
+    return result;
   }
 
   Future<String> forgotPassword({required String email}) async {

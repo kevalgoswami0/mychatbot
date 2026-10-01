@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -12,7 +13,6 @@ import '../../features/chat/chat_screen.dart';
 import '../../features/history/history_screen.dart';
 import '../../features/onboarding/onboarding_screen.dart';
 import '../../features/profile/profile_screen.dart';
-import '../../features/settings/settings_screen.dart';
 import '../../features/splash/splash_screen.dart';
 import '../../features/subscription/subscription_screen.dart';
 import '../../features/users/users_screen.dart';
@@ -20,6 +20,19 @@ import 'route_names.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey =
     GlobalKey<NavigatorState>(debugLabel: 'root');
+
+class _AuthRefreshNotifier extends ChangeNotifier {
+  _AuthRefreshNotifier(Stream<dynamic> stream) {
+    _sub = stream.listen((_) => notifyListeners());
+  }
+  late final StreamSubscription<dynamic> _sub;
+
+  @override
+  void dispose() {
+    _sub.cancel();
+    super.dispose();
+  }
+}
 
 /// Custom transition: subtle fade + slight slide (250ms, easeOutCubic)
 CustomTransitionPage<T> _buildSmoothPage<T>({
@@ -61,9 +74,13 @@ CustomTransitionPage<T> _buildSmoothPage<T>({
 
 final routerProvider = Provider<GoRouter>((ref) {
   final storage = ref.watch(localStorageProvider);
+  final authRepo = ref.watch(authRepositoryProvider);
+  final refreshListenable = _AuthRefreshNotifier(authRepo.authStateChanges);
+  ref.onDispose(refreshListenable.dispose);
 
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
+    refreshListenable: refreshListenable,
     initialLocation: AppRoutes.splashPath,
     debugLogDiagnostics: false,
     redirect: (context, state) {
@@ -205,10 +222,14 @@ final routerProvider = Provider<GoRouter>((ref) {
         name: AppRoutes.chat,
         pageBuilder: (context, state) {
           final convId = state.uri.queryParameters['id'];
+          final user = storage.loadUserProfile();
           return _buildSmoothPage(
             context: context,
             state: state,
-            child: ChatScreen(conversationId: convId),
+            child: ChatScreen(
+              key: ValueKey('chat_${user?.id ?? "unauth"}_${convId ?? "new"}'),
+              conversationId: convId,
+            ),
           );
         },
       ),
@@ -246,14 +267,14 @@ final routerProvider = Provider<GoRouter>((ref) {
         ),
       ),
 
-      // Settings
+      // Settings (All settings and profile consolidated into ProfileScreen)
       GoRoute(
         path: AppRoutes.settingsPath,
         name: AppRoutes.settings,
         pageBuilder: (context, state) => _buildSmoothPage(
           context: context,
           state: state,
-          child: const SettingsScreen(),
+          child: const ProfileScreen(),
         ),
       ),
 

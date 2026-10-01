@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 import '../../core/constants/app_spacing.dart';
 import '../../core/router/route_names.dart';
 import '../../core/theme/text_styles.dart';
 import '../../core/utils/date_formatters.dart';
 import '../../core/utils/extensions.dart';
-import '../../core/utils/razorpay_service.dart';
+import '../../core/utils/logger.dart';
 import '../../core/widgets/app_button.dart';
 import '../../data/models/subscription_plan.dart';
 import '../auth/providers/auth_provider.dart';
+import '../history/providers/history_provider.dart';
 import 'providers/subscription_provider.dart';
 
 /// Minimalist, high-conversion Subscription Plans screen.
@@ -23,6 +25,139 @@ class SubscriptionScreen extends ConsumerStatefulWidget {
 
 class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
   int? _processingPlanId;
+  int? _pendingPlanId;
+  String? _pendingPlanName;
+  late final Razorpay _razorpay;
+
+  @override
+  void initState() {
+    super.initState();
+    _razorpay = Razorpay();
+    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
+    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
+  }
+
+  @override
+  void dispose() {
+    _razorpay.clear();
+    super.dispose();
+  }
+
+  void _handlePaymentSuccess(PaymentSuccessResponse response) {
+    AppLogger.info('Razorpay payment success: ${response.paymentId}');
+    final paymentId = response.paymentId;
+    final orderId = response.orderId;
+    final signature = response.signature;
+    final planId = _pendingPlanId;
+    final planName = _pendingPlanName ?? 'Subscription';
+
+    if (paymentId == null || orderId == null || signature == null || planId == null) {
+      if (mounted) {
+        setState(() {
+          _processingPlanId = null;
+          _pendingPlanId = null;
+          _pendingPlanName = null;
+        });
+        context.showSnackBar('Payment details incomplete. Verification aborted.', isError: true);
+      }
+      return;
+    }
+
+    _verifyPaymentAndActivate(
+      paymentId: paymentId,
+      orderId: orderId,
+      signature: signature,
+      planId: planId,
+      planName: planName,
+    );
+  }
+
+  void _handlePaymentError(PaymentFailureResponse response) {
+    AppLogger.warning('Razorpay payment error: [${response.code}] ${response.message}');
+    if (!mounted) return;
+    setState(() {
+      _processingPlanId = null;
+      _pendingPlanId = null;
+      _pendingPlanName = null;
+    });
+
+    if (response.code == Razorpay.PAYMENT_CANCELLED) {
+      context.showSnackBar('Payment cancelled');
+    } else {
+      final msg = response.message != null && response.message!.isNotEmpty
+          ? response.message!
+          : 'Payment failed (code ${response.code})';
+      context.showSnackBar(msg, isError: true);
+    }
+  }
+
+  void _handleExternalWallet(ExternalWalletResponse response) {
+    AppLogger.info('Razorpay external wallet: ${response.walletName}');
+    if (!mounted) return;
+    setState(() {
+      _processingPlanId = null;
+      _pendingPlanId = null;
+      _pendingPlanName = null;
+    });
+    context.showSnackBar('External wallet selected: ${response.walletName}');
+  }
+
+  Future<void> _verifyPaymentAndActivate({
+    required String paymentId,
+    required String orderId,
+    required String signature,
+    required int planId,
+    required String planName,
+  }) async {
+    setState(() => _processingPlanId = planId);
+    try {
+      // Submit Razorpay payment ID, order ID, and cryptographic signature to backend for verification
+      await ref.read(userSubscriptionProvider.notifier).verifyPayment(
+            razorpayPaymentId: paymentId,
+            razorpayOrderId: orderId,
+            razorpaySignature: signature,
+            planId: planId,
+          );
+
+      if (!mounted) return;
+      setState(() {
+        _processingPlanId = null;
+        _pendingPlanId = null;
+        _pendingPlanName = null;
+      });
+      await ref.read(userSubscriptionProvider.notifier).refresh();
+      if (!mounted) return;
+      context.showSnackBar(
+        'Payment verified! Your $planName subscription is now active.',
+      );
+
+      // Seamlessly return to current chat to continue conversation
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
+      if (context.canPop()) {
+        context.pop();
+      } else {
+        final activeId = ref.read(activeConversationIdProvider);
+        if (activeId != null && activeId.isNotEmpty) {
+          context.go('${AppRoutes.chatPath}?id=$activeId');
+        } else {
+          context.go(AppRoutes.chatPath);
+        }
+      }
+    } catch (verifyErr) {
+      if (!mounted) return;
+      setState(() {
+        _processingPlanId = null;
+        _pendingPlanId = null;
+        _pendingPlanName = null;
+      });
+      context.showSnackBar(
+        verifyErr.toString().replaceAll('Exception: ', ''),
+        isError: true,
+      );
+    }
+  }
 
   Future<void> _handleSelectPlan(SubscriptionPlan plan) async {
     if (plan.price == 0) {
@@ -37,7 +172,11 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
       return;
     }
 
-    setState(() => _processingPlanId = plan.backendId);
+    setState(() {
+      _processingPlanId = plan.backendId;
+      _pendingPlanId = plan.backendId;
+      _pendingPlanName = plan.name;
+    });
 
     try {
       // 2. Create official Razorpay order on backend
@@ -47,56 +186,37 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
 
       if (!mounted) return;
 
-      // 3. Launch official Razorpay standard checkout modal (showing QR, UPI, Card, Netbanking)
-      await launchRazorpayWebCheckout(
-        keyId: order.keyId,
-        orderId: order.orderId,
-        amountInRupees: order.amountInRupees,
-        currency: order.currency,
-        planName: plan.name,
-        userName: user.name,
-        userEmail: user.email,
-        onSuccess: (paymentId, orderId, signature) async {
-          try {
-            // 4. Submit real Razorpay payment ID and cryptographic signature to backend for verification
-            await ref.read(userSubscriptionProvider.notifier).verifyPayment(
-                  razorpayPaymentId: paymentId,
-                  razorpayOrderId: orderId,
-                  razorpaySignature: signature,
-                  planId: plan.backendId,
-                );
+      final keyId = order.keyId ?? 'rzp_test_ThS9jKhfBkpcIx';
 
-            if (!mounted) return;
-            setState(() => _processingPlanId = null);
-            ref.read(userSubscriptionProvider.notifier).refresh();
-            context.showSnackBar(
-              'Payment verified! Your ${plan.name} subscription is now active.',
-            );
-          } catch (verifyErr) {
-            if (!mounted) return;
-            setState(() => _processingPlanId = null);
-            context.showSnackBar(
-              verifyErr.toString().replaceAll('Exception: ', ''),
-              isError: true,
-            );
-          }
+      // 3. Launch official Razorpay Checkout UI directly via Razorpay Flutter SDK
+      final options = <String, dynamic>{
+        'key': keyId,
+        'amount': order.amount, // amount in paise
+        'name': 'Nova Chat AI',
+        'description': '${plan.name} Subscription Payment',
+        'order_id': order.orderId,
+        'currency': order.currency,
+        'prefill': {
+          'name': user.name,
+          'email': user.email,
+          'contact': '',
         },
-        onFailure: (errorMsg) {
-          if (!mounted) return;
-          setState(() => _processingPlanId = null);
-          final isCancel = errorMsg.toLowerCase().contains('cancel') ||
-              errorMsg.toLowerCase().contains('closed') ||
-              errorMsg.toLowerCase().contains('dismiss');
+        'theme': {
+          'color': '#0C2340',
+        },
+        'external': {
+          'wallets': ['paytm']
+        }
+      };
 
-          context.showSnackBar(
-            isCancel ? 'Payment cancelled' : 'Payment failed: $errorMsg',
-            isError: !isCancel,
-          );
-        },
-      );
+      _razorpay.open(options);
     } catch (e) {
       if (mounted) {
-        setState(() => _processingPlanId = null);
+        setState(() {
+          _processingPlanId = null;
+          _pendingPlanId = null;
+          _pendingPlanName = null;
+        });
         context.showSnackBar(
           e.toString().replaceAll('Exception: ', ''),
           isError: true,
@@ -152,7 +272,7 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
             ),
             onPressed: () {
               Navigator.of(ctx).pop();
-              context.push(AppRoutes.loginPath);
+              context.push(AppRoutes.authPath);
             },
             child: const Text('Sign In / Sign Up', style: TextStyle(fontWeight: FontWeight.w700)),
           ),
@@ -184,295 +304,383 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
             await ref.read(userSubscriptionProvider.notifier).refresh();
             ref.invalidate(plansListProvider);
           },
-          child: ListView(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md,
-              vertical: AppSpacing.sm,
-            ),
-            children: [
-              // Header Tagline
-              Text(
-                'Unlock Unlimited Intelligence',
-                style: AppTextStyles.titleLarge.copyWith(
-                  color: colors.textPrimary,
-                  fontWeight: FontWeight.w700,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 640),
+              child: ListView(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.md,
+                  vertical: AppSpacing.sm,
                 ),
-              ),
-              const SizedBox(height: AppSpacing.xxs),
-              Text(
-                'Power your workflow with Groq LLaMA 3.3, real-time WebSocket streaming, and extended context.',
-                style: AppTextStyles.bodyMedium.copyWith(
-                  color: colors.textSecondary,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-
-              // Active Subscription Card
-              userSubAsync.when(
-                data: (sub) => Container(
-                  padding: const EdgeInsets.all(AppSpacing.md),
-                  decoration: BoxDecoration(
-                    color: colors.surface,
-                    borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
-                    border: Border.all(color: colors.border, width: 1),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(AppSpacing.sm),
-                        decoration: BoxDecoration(
-                          color: colors.primary.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                children: [
+                  // Hero Header Section
+                  Center(
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: colors.primary.withValues(alpha: 0.12),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(Icons.workspace_premium_rounded, size: 26, color: colors.primary),
                         ),
-                        child: Icon(Icons.verified_rounded, size: 22, color: colors.primary),
+                        const SizedBox(height: AppSpacing.sm),
+                        Text(
+                          'Subscription Plans',
+                          textAlign: TextAlign.center,
+                          style: AppTextStyles.titleLarge.copyWith(
+                            color: colors.textPrimary,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 22,
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.xxs),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+                          child: Text(
+                            'Supercharge your conversations with extended reasoning, zero wait times, and high-throughput streaming.',
+                            textAlign: TextAlign.center,
+                            style: AppTextStyles.bodyMedium.copyWith(
+                              color: colors.textSecondary,
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+
+                  // Active Subscription Card
+                  userSubAsync.when(
+                    data: (sub) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm + 4),
+                      decoration: BoxDecoration(
+                        color: colors.surface,
+                        borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+                        border: Border.all(
+                          color: sub.hasSubscription
+                              ? colors.success.withValues(alpha: 0.35)
+                              : colors.border,
+                          width: 1,
+                        ),
                       ),
-                      const SizedBox(width: AppSpacing.md),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: (sub.hasSubscription ? colors.success : colors.primary)
+                                  .withValues(alpha: 0.12),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              sub.hasSubscription ? Icons.verified_rounded : Icons.bolt_rounded,
+                              size: 20,
+                              color: sub.hasSubscription ? colors.success : colors.primary,
+                            ),
+                          ),
+                          const SizedBox(width: AppSpacing.md),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Current: ${sub.planName}',
-                                  style: AppTextStyles.titleSmall.copyWith(
-                                    color: colors.textPrimary,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                const SizedBox(width: AppSpacing.xs),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: AppSpacing.xs,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: sub.hasSubscription
-                                        ? colors.success.withValues(alpha: 0.15)
-                                        : colors.textSecondary.withValues(alpha: 0.12),
-                                    borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
-                                  ),
-                                  child: Text(
-                                    sub.hasSubscription ? 'ACTIVE' : 'FREE TIER',
-                                    style: AppTextStyles.micro.copyWith(
-                                      color: sub.hasSubscription ? colors.success : colors.textSecondary,
-                                      fontWeight: FontWeight.w700,
+                                Row(
+                                  children: [
+                                    Text(
+                                      'Current Tier: ${sub.planName}',
+                                      style: AppTextStyles.bodyMedium.copyWith(
+                                        color: colors.textPrimary,
+                                        fontWeight: FontWeight.w700,
+                                      ),
                                     ),
+                                    const SizedBox(width: AppSpacing.xs),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: (sub.hasSubscription ? colors.success : colors.textSecondary)
+                                            .withValues(alpha: 0.15),
+                                        borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                                      ),
+                                      child: Text(
+                                        sub.hasSubscription ? 'ACTIVE' : 'FREE',
+                                        style: AppTextStyles.micro.copyWith(
+                                          color: sub.hasSubscription ? colors.success : colors.textSecondary,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  sub.endDate != null
+                                      ? 'Valid until ${AppDateFormatters.formatDateDivider(sub.endDate!)}'
+                                      : 'Initial 10-minute trial session',
+                                  style: AppTextStyles.caption.copyWith(
+                                    color: colors.textSecondary,
                                   ),
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 2),
-                            Text(
-                              sub.endDate != null
-                                  ? 'Valid until ${AppDateFormatters.formatDateDivider(sub.endDate!)}'
-                                  : 'Initial 10-minute free trial session',
-                              style: AppTextStyles.caption.copyWith(
-                                color: colors.textSecondary,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                loading: () => const SizedBox.shrink(),
-                error: (err, stack) => const SizedBox.shrink(),
-              ),
-
-              const SizedBox(height: AppSpacing.lg),
-
-              // Plans List
-              plansAsync.when(
-                loading: () => const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(AppSpacing.xl),
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-                error: (err, _) => Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(AppSpacing.md),
-                    child: Text('Failed to load plans: $err', style: TextStyle(color: colors.error)),
-                  ),
-                ),
-                data: (plans) {
-                  final activePlanName = userSubAsync.value?.planName.toLowerCase() ?? 'free';
-
-                  return Column(
-                    children: plans.map((plan) {
-                      final isCurrent = plan.name.toLowerCase() == activePlanName;
-                      final isProcessing = _processingPlanId == plan.backendId;
-
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: colors.surface,
-                            borderRadius: BorderRadius.circular(AppSpacing.radiusLg),
-                            border: Border.all(
-                              color: isCurrent
-                                  ? colors.primary
-                                  : (plan.isPopular ? colors.textPrimary : colors.border),
-                              width: isCurrent ? 2 : 1,
-                            ),
                           ),
-                          padding: const EdgeInsets.all(AppSpacing.lg),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // Plan Name & Badges
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        ],
+                      ),
+                    ),
+                    loading: () => const SizedBox.shrink(),
+                    error: (err, stack) => const SizedBox.shrink(),
+                  ),
+
+                  const SizedBox(height: AppSpacing.lg),
+
+                  // Plans List
+                  plansAsync.when(
+                    loading: () => const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(AppSpacing.xl),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                    error: (err, _) => Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(AppSpacing.md),
+                        child: Text('Failed to load plans: $err', style: TextStyle(color: colors.error)),
+                      ),
+                    ),
+                    data: (plans) {
+                      final activePlanName = userSubAsync.value?.planName.toLowerCase() ?? 'free';
+
+                      return Column(
+                        children: plans.map((plan) {
+                          final isCurrent = plan.name.toLowerCase() == activePlanName;
+                          final isProcessing = _processingPlanId == plan.backendId;
+                          final isPopular = plan.isPopular && !isCurrent;
+
+                          // Icon per plan
+                          IconData planIcon = Icons.bolt_rounded;
+                          if (plan.name.toLowerCase().contains('free')) {
+                            planIcon = Icons.explore_outlined;
+                          } else if (plan.name.toLowerCase().contains('pro')) {
+                            planIcon = Icons.auto_awesome_rounded;
+                          }
+
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: colors.surface,
+                                borderRadius: BorderRadius.circular(AppSpacing.radiusLg),
+                                border: Border.all(
+                                  color: isCurrent
+                                      ? colors.primary
+                                      : (isPopular
+                                          ? colors.primary.withValues(alpha: 0.7)
+                                          : colors.border),
+                                  width: isCurrent || isPopular ? 1.5 : 1,
+                                ),
+                              ),
+                              padding: const EdgeInsets.all(AppSpacing.lg),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
+                                  // Plan Name & Badges
                                   Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text(
-                                        plan.name,
-                                        style: AppTextStyles.titleMedium.copyWith(
-                                          color: colors.textPrimary,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                      if (isCurrent) ...[
-                                        const SizedBox(width: AppSpacing.xs),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: AppSpacing.xs,
-                                            vertical: 2,
+                                      Row(
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.all(6),
+                                            decoration: BoxDecoration(
+                                              color: (isCurrent
+                                                      ? colors.primary
+                                                      : (isPopular ? colors.primary : colors.textSecondary))
+                                                  .withValues(alpha: 0.12),
+                                              borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                                            ),
+                                            child: Icon(
+                                              planIcon,
+                                              size: 18,
+                                              color: isCurrent
+                                                  ? colors.primary
+                                                  : (isPopular ? colors.primary : colors.textSecondary),
+                                            ),
                                           ),
-                                          decoration: BoxDecoration(
-                                            color: colors.primary.withValues(alpha: 0.15),
-                                            borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
-                                            border: Border.all(color: colors.primary, width: 1),
-                                          ),
-                                          child: Text(
-                                            'CURRENT',
-                                            style: AppTextStyles.micro.copyWith(
-                                              color: colors.primary,
+                                          const SizedBox(width: AppSpacing.sm),
+                                          Text(
+                                            plan.name,
+                                            style: AppTextStyles.titleMedium.copyWith(
+                                              color: colors.textPrimary,
                                               fontWeight: FontWeight.w700,
                                             ),
                                           ),
+                                          if (isCurrent) ...[
+                                            const SizedBox(width: AppSpacing.xs),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: AppSpacing.xs,
+                                                vertical: 2,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: colors.primary.withValues(alpha: 0.15),
+                                                borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+                                                border: Border.all(color: colors.primary, width: 1),
+                                              ),
+                                              child: Text(
+                                                'CURRENT',
+                                                style: AppTextStyles.micro.copyWith(
+                                                  color: colors.primary,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                      if (isPopular)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: AppSpacing.sm,
+                                            vertical: 3,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: colors.primary,
+                                            borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+                                          ),
+                                          child: Text(
+                                            'POPULAR',
+                                            style: AppTextStyles.micro.copyWith(
+                                              color: colors.onPrimary,
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 10,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
                                         ),
-                                      ],
                                     ],
                                   ),
-                                  if (plan.isPopular && !isCurrent)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: AppSpacing.sm,
-                                        vertical: 3,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: colors.textPrimary,
-                                        borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
-                                      ),
-                                      child: Text(
-                                        'POPULAR',
-                                        style: AppTextStyles.micro.copyWith(
-                                          color: colors.background,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                              const SizedBox(height: AppSpacing.xxs),
-                              Text(
-                                plan.tagline,
-                                style: AppTextStyles.bodyMedium.copyWith(
-                                  color: colors.textSecondary,
-                                ),
-                              ),
-                              const SizedBox(height: AppSpacing.md),
-
-                              // Price Row
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.baseline,
-                                textBaseline: TextBaseline.alphabetic,
-                                children: [
+                                  const SizedBox(height: AppSpacing.xs),
                                   Text(
-                                    plan.formattedPrice,
-                                    style: AppTextStyles.display.copyWith(
-                                      color: colors.textPrimary,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(width: AppSpacing.xs),
-                                  Text(
-                                    plan.billingPeriod,
-                                    style: AppTextStyles.caption.copyWith(
+                                    plan.tagline,
+                                    style: AppTextStyles.bodyMedium.copyWith(
                                       color: colors.textSecondary,
                                     ),
                                   ),
-                                ],
-                              ),
-                              const SizedBox(height: AppSpacing.md),
-                              Divider(color: colors.border, height: 1),
-                              const SizedBox(height: AppSpacing.md),
+                                  const SizedBox(height: AppSpacing.md),
 
-                              // Features
-                              ...plan.features.map(
-                                (feat) => Padding(
-                                  padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                  // Price Row
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                                    textBaseline: TextBaseline.alphabetic,
                                     children: [
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 2),
-                                        child: Icon(
-                                          Icons.check_circle_rounded,
-                                          size: 16,
-                                          color: isCurrent ? colors.primary : colors.success,
+                                      Text(
+                                        plan.formattedPrice,
+                                        style: AppTextStyles.display.copyWith(
+                                          color: colors.textPrimary,
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 28,
                                         ),
                                       ),
-                                      const SizedBox(width: AppSpacing.sm),
-                                      Expanded(
-                                        child: Text(
-                                          feat,
-                                          style: AppTextStyles.bodyMedium.copyWith(
-                                            color: colors.textPrimary,
-                                          ),
+                                      const SizedBox(width: AppSpacing.xs),
+                                      Text(
+                                        plan.billingPeriod,
+                                        style: AppTextStyles.caption.copyWith(
+                                          color: colors.textSecondary,
+                                          fontWeight: FontWeight.w500,
                                         ),
                                       ),
                                     ],
                                   ),
-                                ),
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
+                                  const SizedBox(height: AppSpacing.md),
+                                  Divider(color: colors.border.withValues(alpha: 0.6), height: 1),
+                                  const SizedBox(height: AppSpacing.md),
 
-                              // Action Button
-                              AppButton(
-                                text: isCurrent
-                                    ? 'Active Plan'
-                                    : (plan.price == 0 ? 'Free Plan' : 'Subscribe to ${plan.name}'),
-                                isLoading: isProcessing,
-                                variant: isCurrent
-                                    ? AppButtonVariant.secondary
-                                    : (plan.isPopular ? AppButtonVariant.primary : AppButtonVariant.secondary),
-                                onPressed: isCurrent ? null : () => _handleSelectPlan(plan),
+                                  // Features
+                                  ...plan.features.map(
+                                    (feat) => Padding(
+                                      padding: const EdgeInsets.only(bottom: AppSpacing.xs + 2),
+                                      child: Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Padding(
+                                            padding: const EdgeInsets.only(top: 2),
+                                            child: Icon(
+                                              Icons.check_circle_rounded,
+                                              size: 16,
+                                              color: isCurrent ? colors.primary : colors.success,
+                                            ),
+                                          ),
+                                          const SizedBox(width: AppSpacing.sm),
+                                          Expanded(
+                                            child: Text(
+                                              feat,
+                                              style: AppTextStyles.bodyMedium.copyWith(
+                                                color: colors.textPrimary,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: AppSpacing.md),
+
+                                  // Action Button
+                                  AppButton(
+                                    text: isCurrent
+                                        ? 'Current Plan'
+                                        : (plan.price == 0 ? 'Free Plan' : 'Subscribe to ${plan.name}'),
+                                    isLoading: isProcessing,
+                                    icon: isCurrent ? Icons.check_rounded : (plan.price == 0 ? null : Icons.bolt_rounded),
+                                    variant: isCurrent
+                                        ? AppButtonVariant.secondary
+                                        : (isPopular ? AppButtonVariant.primary : AppButtonVariant.secondary),
+                                    onPressed: isCurrent ? null : () => _handleSelectPlan(plan),
+                                  ),
+                                ],
                               ),
-                            ],
+                            ),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+
+                  const SizedBox(height: AppSpacing.md),
+
+                  // Trust & Security Badge
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm, horizontal: AppSpacing.md),
+                    decoration: BoxDecoration(
+                      color: colors.surface,
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+                      border: Border.all(color: colors.border.withValues(alpha: 0.5)),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.shield_outlined, size: 16, color: colors.success),
+                        const SizedBox(width: AppSpacing.xs),
+                        Text(
+                          '256-Bit SSL Encrypted Razorpay Checkout',
+                          style: AppTextStyles.caption.copyWith(
+                            color: colors.textSecondary,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
-                      );
-                    }).toList(),
-                  );
-                },
-              ),
-
-              const SizedBox(height: AppSpacing.md),
-              Center(
-                child: Text(
-                  '🔒 Official 256-Bit SSL Encrypted Razorpay Checkout',
-                  style: AppTextStyles.micro.copyWith(
-                    color: colors.textSecondary,
+                      ],
+                    ),
                   ),
-                ),
+                  const SizedBox(height: AppSpacing.xl),
+                ],
               ),
-              const SizedBox(height: AppSpacing.xl),
-            ],
+            ),
           ),
         ),
       ),

@@ -33,39 +33,8 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
-  <!-- Official Razorpay Checkout Script -->
+  <!-- Razorpay Checkout -->
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-  <script>
-    window.openRazorpay = function(optionsJson, onSuccess, onFailure) {
-      try {
-        var options = typeof optionsJson === 'string' ? JSON.parse(optionsJson) : optionsJson;
-        options.handler = function(response) {
-          if (onSuccess) {
-            onSuccess(response.razorpay_payment_id, response.razorpay_order_id, response.razorpay_signature);
-          }
-        };
-        options.modal = {
-          ondismiss: function() {
-            if (onFailure) {
-              onFailure("Payment cancelled by user");
-            }
-          }
-        };
-        var rzp = new Razorpay(options);
-        rzp.on('payment.failed', function(response) {
-          if (onFailure) {
-            var desc = (response && response.error && response.error.description) ? response.error.description : "Payment failed";
-            onFailure(desc);
-          }
-        });
-        rzp.open();
-      } catch (err) {
-        if (onFailure) {
-          onFailure(err.toString());
-        }
-      }
-    };
-  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

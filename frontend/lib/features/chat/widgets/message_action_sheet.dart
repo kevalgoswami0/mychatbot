@@ -5,6 +5,7 @@ import '../../../core/constants/app_spacing.dart';
 import '../../../core/theme/text_styles.dart';
 import '../../../core/utils/extensions.dart';
 import '../../../data/models/message.dart';
+import 'select_text_modal.dart';
 
 /// Bottom sheet presenting message actions on long-press (Edit, Copy, Share, Regenerate, Delete).
 class MessageActionSheet extends StatelessWidget {
@@ -64,7 +65,7 @@ class MessageActionSheet extends StatelessWidget {
                 },
               ),
             ],
-            // Copy action
+            // Copy full action
             ListTile(
               leading: Icon(Icons.copy_rounded, size: 20, color: colors.textPrimary),
               title: Text('Copy text', style: AppTextStyles.bodyMedium),
@@ -77,6 +78,24 @@ class MessageActionSheet extends StatelessWidget {
                 context.showSnackBar('Message copied to clipboard');
               },
             ),
+            // Select text section action (only for AI response)
+            if (message.isAssistant) ...[
+              ListTile(
+                leading: Icon(Icons.highlight_alt_rounded, size: 20, color: colors.textPrimary),
+                title: Text('Select text section', style: AppTextStyles.bodyMedium),
+                subtitle: Text(
+                  'Highlight and copy specific text',
+                  style: AppTextStyles.caption.copyWith(color: colors.textSecondary),
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+                ),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  showSelectTextModal(context, message.content);
+                },
+              ),
+            ],
             // Share action
             ListTile(
               leading: Icon(Icons.share_outlined, size: 20, color: colors.textPrimary),
@@ -86,6 +105,7 @@ class MessageActionSheet extends StatelessWidget {
               ),
               onTap: () {
                 Navigator.of(context).pop();
+                // ignore: deprecated_member_use
                 Share.share(
                   message.content,
                   subject: message.isUser ? 'Prompt' : 'Nova Chat Response',
@@ -106,21 +126,23 @@ class MessageActionSheet extends StatelessWidget {
                 },
               ),
             ],
-            // Delete action
-            ListTile(
-              leading: Icon(Icons.delete_outline_rounded, size: 20, color: colors.error),
-              title: Text(
-                'Delete message',
-                style: AppTextStyles.bodyMedium.copyWith(color: colors.error),
+            // Delete action (only for user messages - not present when holding AI response)
+            if (message.isUser) ...[
+              ListTile(
+                leading: Icon(Icons.delete_outline_rounded, size: 20, color: colors.error),
+                title: Text(
+                  'Delete message',
+                  style: AppTextStyles.bodyMedium.copyWith(color: colors.error),
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+                ),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  onDelete();
+                },
               ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
-              ),
-              onTap: () {
-                Navigator.of(context).pop();
-                onDelete();
-              },
-            ),
+            ],
           ],
         ),
       ),

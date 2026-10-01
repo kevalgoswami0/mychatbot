@@ -148,9 +148,9 @@ class UserSubscriptionStatus {
     this.startDate,
     this.endDate,
     this.limitReached = false,
-    this.dailyLimitSeconds = 600,
+    this.dailyLimitSeconds = 120,
     this.usedSecondsToday = 0,
-    this.remainingSecondsToday = 600,
+    this.remainingSecondsToday = 120,
   });
 
   final bool hasSubscription;
@@ -167,27 +167,64 @@ class UserSubscriptionStatus {
   final int remainingSecondsToday;
 
   bool get isActive => status == 'active';
-  bool get isChatAllowed => hasSubscription || !limitReached;
+  
+  /// Validates whether the subscription is active and within its valid end date
+  bool get isSubscribedAndValid {
+    if (!hasSubscription || status != 'active') return false;
+    if (endDate != null) {
+      final nowUtc = DateTime.now().toUtc();
+      final endUtc = endDate!.isUtc ? endDate! : endDate!.toUtc();
+      if (nowUtc.isAfter(endUtc)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool get isChatAllowed => isSubscribedAndValid || !limitReached;
+
+  Map<String, dynamic> toJson() => {
+    'has_subscription': hasSubscription,
+    'plan_name': planName,
+    'status': status,
+    'subscription_id': subscriptionId,
+    'plan_id': planId,
+    'price': price,
+    'start_date': startDate?.toIso8601String(),
+    'end_date': endDate?.toIso8601String(),
+    'limit_reached': limitReached,
+    'daily_limit_seconds': dailyLimitSeconds,
+    'used_seconds_today': usedSecondsToday,
+    'remaining_seconds_today': remainingSecondsToday,
+  };
 
   factory UserSubscriptionStatus.fromJson(Map<String, dynamic> json) {
     DateTime? parseDate(dynamic v) {
       if (v == null) return null;
-      return DateTime.tryParse(v.toString());
+      var str = v.toString();
+      if (!str.endsWith('Z') && !str.contains('+')) {
+        str = '${str}Z';
+      }
+      return DateTime.tryParse(str) ?? DateTime.tryParse(v.toString());
     }
 
+    final end = parseDate(json['end_date']);
+    final rawHasSub = json['has_subscription'] == true;
+    final isExpired = end != null && DateTime.now().toUtc().isAfter(end.toUtc());
+
     return UserSubscriptionStatus(
-      hasSubscription: json['has_subscription'] == true,
+      hasSubscription: rawHasSub && !isExpired,
       planName: json['plan_name']?.toString() ?? 'Free',
-      status: json['status']?.toString() ?? 'inactive',
+      status: isExpired ? 'expired' : (json['status']?.toString() ?? 'inactive'),
       subscriptionId: (json['subscription_id'] as num?)?.toInt(),
       planId: (json['plan_id'] as num?)?.toInt(),
       price: (json['price'] as num?)?.toInt(),
       startDate: parseDate(json['start_date']),
-      endDate: parseDate(json['end_date']),
-      limitReached: json['limit_reached'] == true,
-      dailyLimitSeconds: (json['daily_limit_seconds'] as num?)?.toInt() ?? 600,
-      usedSecondsToday: (json['used_seconds_today'] as num?)?.toInt() ?? 0,
-      remainingSecondsToday: (json['remaining_seconds_today'] as num?)?.toInt() ?? 600,
+      endDate: end,
+      limitReached: (rawHasSub && !isExpired) ? false : (json['limit_reached'] == true),
+      dailyLimitSeconds: (json['daily_limit_seconds'] as num?)?.toInt() ?? 120,
+      usedSecondsToday: (rawHasSub && !isExpired) ? 0 : ((json['used_seconds_today'] as num?)?.toInt() ?? 0),
+      remainingSecondsToday: (json['remaining_seconds_today'] as num?)?.toInt() ?? 120,
     );
   }
 }

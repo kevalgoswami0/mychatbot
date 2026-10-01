@@ -20,18 +20,19 @@ class MarkdownMessageBody extends StatelessWidget {
   final bool isStreaming;
 
   /// Robust markdown sanitizer that converts all `#` heading markers into clean bold text,
-  /// strips trailing/dangling hashes in real-time, and preserves syntax within code blocks.
-  static String sanitizeMarkdown(String raw) {
+  /// normalizes bold asterisks, auto-closes streaming markdown tags, and prevents raw asterisks
+  /// from being visible on screen during or after streaming.
+  static String sanitizeMarkdown(String raw, {bool isStreaming = false}) {
     if (raw.isEmpty) return '';
 
-    // If there are fenced code blocks, only sanitize non-code parts to preserve code comments
+    // If there are fenced code blocks, only sanitize non-code parts to preserve code syntax
     final codeBlockRegex = RegExp(r'(```[\s\S]*?```)');
     if (raw.contains('```')) {
       final parts = raw.split(codeBlockRegex);
       final matches = codeBlockRegex.allMatches(raw).map((m) => m.group(0)!).toList();
       final sb = StringBuffer();
       for (int i = 0; i < parts.length; i++) {
-        sb.write(_cleanNonCodeMarkdown(parts[i]));
+        sb.write(_cleanNonCodeMarkdown(parts[i], isStreaming: isStreaming));
         if (i < matches.length) {
           sb.write(matches[i]);
         }
@@ -39,10 +40,10 @@ class MarkdownMessageBody extends StatelessWidget {
       return sb.toString().trimLeft();
     }
 
-    return _cleanNonCodeMarkdown(raw).trimLeft();
+    return _cleanNonCodeMarkdown(raw, isStreaming: isStreaming).trimLeft();
   }
 
-  static String _cleanNonCodeMarkdown(String text) {
+  static String _cleanNonCodeMarkdown(String text, {bool isStreaming = false}) {
     if (text.isEmpty) return '';
 
     // 1. Remove dangling trailing hash markers typed in real-time (e.g. "###", "\n###", "### ")
@@ -88,7 +89,44 @@ class MarkdownMessageBody extends StatelessWidget {
     // 5. Remove any remaining stray hashes anywhere in non-code text
     cleaned = cleaned.replaceAll(RegExp(r'#{1,6}'), '');
 
-    // 6. Normalize excessive consecutive newlines
+    // 6. Normalize triple-plus asterisks to standard bold '**'
+    cleaned = cleaned.replaceAll(RegExp(r'\*{3,}'), '**');
+
+    // 7. Fix whitespace inside bold markers that prevents markdown from parsing as bold
+    // e.g. "** text **" or "** text**" or "**text **" -> "**text**"
+    cleaned = cleaned.replaceAllMapped(
+      RegExp(r'\*\*\s+(.+?)\s+\*\*'),
+      (m) => '**${m.group(1)}**',
+    );
+    cleaned = cleaned.replaceAllMapped(
+      RegExp(r'\*\*\s+(.+?)\*\*'),
+      (m) => '**${m.group(1)}**',
+    );
+    cleaned = cleaned.replaceAllMapped(
+      RegExp(r'\*\*(.+?)\s+\*\*'),
+      (m) => '**${m.group(1)}**',
+    );
+
+    // 8. Handle trailing/streaming asterisks so raw asterisks are never visible on screen
+    if (isStreaming) {
+      if (cleaned.endsWith('**')) {
+        // Trailing double asterisk with no word yet: strip temporarily so raw asterisks never display
+        cleaned = cleaned.substring(0, cleaned.length - 2);
+      } else if (cleaned.endsWith('*')) {
+        // Trailing single asterisk: strip temporarily
+        cleaned = cleaned.substring(0, cleaned.length - 1);
+      }
+    }
+
+    // 9. Auto-close unmatched opening '**' bold markers
+    // When text is streaming or incomplete, an unclosed '**' causes Markdown to render literal '**'.
+    // Auto-closing with '**' ensures Markdown renders it immediately as clean bold text without showing asterisks.
+    final boldMatches = RegExp(r'\*\*').allMatches(cleaned).length;
+    if (boldMatches % 2 != 0) {
+      cleaned = '$cleaned**';
+    }
+
+    // 10. Normalize excessive consecutive newlines
     cleaned = cleaned.replaceAll(RegExp(r'\n{3,}'), '\n\n');
 
     return cleaned;
@@ -97,7 +135,7 @@ class MarkdownMessageBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.appColors;
-    final sanitizedData = sanitizeMarkdown(data);
+    final sanitizedData = sanitizeMarkdown(data, isStreaming: isStreaming);
 
     if (sanitizedData.isEmpty && !isStreaming) {
       return const SizedBox.shrink();
@@ -155,13 +193,15 @@ class MarkdownMessageBody extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (sanitizedData.isNotEmpty)
-          MarkdownBody(
-            data: sanitizedData,
-            selectable: false,
-            styleSheet: markdownStyleSheet,
-            builders: {
-              'code': _CodeBlockCustomBuilder(colors: colors),
-            },
+          SelectionArea(
+            child: MarkdownBody(
+              data: sanitizedData,
+              selectable: false,
+              styleSheet: markdownStyleSheet,
+              builders: {
+                'code': _CodeBlockCustomBuilder(colors: colors),
+              },
+            ),
           ),
       ],
     );

@@ -73,7 +73,7 @@ class _VerifyEmailScreenState extends ConsumerState<VerifyEmailScreen> {
 
     try {
       final message = await ref.read(authProvider.notifier).verifyEmail(
-            email: _emailController.text.trim(),
+            email: _emailController.text.trim().toLowerCase(),
             otp: _otpController.text.trim(),
           );
 

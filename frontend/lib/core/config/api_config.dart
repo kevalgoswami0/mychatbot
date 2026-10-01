@@ -27,6 +27,7 @@ class ApiConfig {
   static const String authVerifyResetOtpEndpoint = '/users/verify-reset-otp';
   static const String authResetPasswordEndpoint = '/users/reset-password';
   static const String authLogoutEndpoint = '/users/logout';
+  static const String authDeleteAccountEndpoint = '/users/account';
   static const String usersListEndpoint = '/users/';
 
   // --- Conversation & Chat Endpoints ---

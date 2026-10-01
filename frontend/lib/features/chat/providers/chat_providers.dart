@@ -38,7 +38,7 @@ class MessagesNotifier extends AsyncNotifier<List<Message>> {
       _uiThrottler?.dispose();
     });
 
-    final activeId = ref.watch(activeConversationIdProvider);
+    final activeId = ref.read(activeConversationIdProvider);
     if (activeId == null || activeId.isEmpty) {
       return const [];
     }
@@ -57,6 +57,51 @@ class MessagesNotifier extends AsyncNotifier<List<Message>> {
     _streamSub = null;
     ref.read(isGeneratingProvider.notifier).setGenerating(false);
     state = const AsyncData([]);
+  }
+
+  /// When user upgrades, update any limit-exceeded failure messages so they are ready for retry
+  void markLimitErrorsReady() {
+    final current = state.value ?? [];
+    bool changed = false;
+    final updated = current.map((m) {
+      if (m.isFailed && m.errorMessage != null) {
+        final err = m.errorMessage!.toLowerCase();
+        if (err.contains('limit') ||
+            err.contains('2 min') ||
+            err.contains('10 min') ||
+            err.contains('upgrade')) {
+          changed = true;
+          return m.copyWith(errorMessage: 'Subscription active. Tap Retry to send.');
+        }
+      }
+      return m;
+    }).toList();
+
+    if (changed) {
+      state = AsyncData(updated);
+      final activeId = ref.read(activeConversationIdProvider);
+      if (activeId != null && activeId.isNotEmpty) {
+        _chatRepository.saveMessages(activeId, updated);
+      }
+    }
+  }
+
+  /// Alias for backward compatibility
+  void clearLimitErrors() => markLimitErrorsReady();
+
+  /// Explicitly load a conversation's messages and switch state
+  Future<void> loadConversation(String id) async {
+    _streamSub?.cancel();
+    _streamSub = null;
+    ref.read(isGeneratingProvider.notifier).setGenerating(false);
+    state = const AsyncLoading();
+    try {
+      final messages = await _chatRepository.getMessages(id);
+      state = AsyncData(messages);
+    } catch (e, st) {
+      AppLogger.warning('Failed to load messages for conversation $id: $e', stackTrace: st);
+      state = const AsyncData([]);
+    }
   }
 
   /// Edit a user's prompt, truncate following messages, and regenerate the bot's response.
@@ -91,8 +136,24 @@ class MessagesNotifier extends AsyncNotifier<List<Message>> {
 
   /// Send user message and begin token-by-token streaming.
   Future<void> sendMessage(String text) async {
-    final activeId = ref.read(activeConversationIdProvider);
-    if (activeId == null || text.trim().isEmpty) return;
+    if (text.trim().isEmpty) return;
+
+    var activeId = ref.read(activeConversationIdProvider);
+
+    // If starting from a new chat, create the conversation entity
+    if (activeId == null || activeId.isEmpty) {
+      final clean = text.trim();
+      final initialTitle = clean.length > 30 ? '${clean.substring(0, 30)}...' : clean;
+      try {
+        final newConv = await _chatRepository.createConversation(initialTitle: initialTitle);
+        activeId = newConv.id;
+        ref.read(activeConversationIdProvider.notifier).state = activeId;
+        ref.read(conversationsProvider.notifier).reload();
+      } catch (_) {
+        activeId = DateTime.now().millisecondsSinceEpoch.toString();
+        ref.read(activeConversationIdProvider.notifier).state = activeId;
+      }
+    }
 
     ref.read(isGeneratingProvider.notifier).setGenerating(true);
 
@@ -164,14 +225,19 @@ class MessagesNotifier extends AsyncNotifier<List<Message>> {
         onError: (err) {
           AppLogger.error('Stream error encountered', error: err);
           final errStr = err.toString().toLowerCase();
-          final isLimit = errStr.contains('limit') || errStr.contains('subscribe') || errStr.contains('upgrade');
+          final isLimit = errStr.contains('free chat limit') ||
+              errStr.contains('daily limit') ||
+              errStr.contains('limit_exceeded') ||
+              errStr.contains('2 min/day') ||
+              errStr.contains('10 min/day') ||
+              errStr.contains('upgrade for unlimited');
           _updateMessageById(
             assistantMessageId,
             streamedBuffer.toString(),
             MessageStatus.failed,
             errorMessage: isLimit
-                ? 'Free chat limit reached (10 min/day). Upgrade to continue.'
-                : 'Network error. Tap to retry.',
+                ? 'Daily limit reached. Upgrade to continue.'
+                : 'Unable to get response. Tap Retry.',
           );
           ref.read(isGeneratingProvider.notifier).setGenerating(false);
           ref.read(conversationsProvider.notifier).reload();
@@ -189,12 +255,14 @@ class MessagesNotifier extends AsyncNotifier<List<Message>> {
           ref.read(conversationsProvider.notifier).reload();
 
           // Ensure local state and persistent storage are strictly aligned
-          try {
-            final persistedMessages = await _chatRepository.getMessages(activeId);
-            if (persistedMessages.isNotEmpty) {
-              state = AsyncData(persistedMessages);
-            }
-          } catch (_) {}
+          if (activeId != null) {
+            try {
+              final persistedMessages = await _chatRepository.getMessages(activeId);
+              if (persistedMessages.isNotEmpty) {
+                state = AsyncData(persistedMessages);
+              }
+            } catch (_) {}
+          }
         },
         cancelOnError: true,
       );
@@ -237,6 +305,7 @@ class MessagesNotifier extends AsyncNotifier<List<Message>> {
     if (activeId == null) return;
 
     ref.read(isGeneratingProvider.notifier).setGenerating(true);
+    _updateMessageById(messageId, '', MessageStatus.streaming, errorMessage: null);
 
     try {
       final stream = _chatRepository.regenerateMessage(activeId, messageId);
@@ -251,14 +320,25 @@ class MessagesNotifier extends AsyncNotifier<List<Message>> {
           });
         },
         onError: (err) {
+          AppLogger.error('Stream error during regenerate', error: err);
+          final errStr = err.toString().toLowerCase();
+          final isLimit = errStr.contains('limit') ||
+              errStr.contains('2 min') ||
+              errStr.contains('10 min') ||
+              errStr.contains('upgrade');
           _updateMessageById(
             messageId,
             streamedBuffer.toString(),
             MessageStatus.failed,
-            errorMessage: 'Failed to regenerate. Tap to retry.',
+            errorMessage: isLimit
+                ? 'Daily limit reached. Upgrade to continue.'
+                : 'Unable to get response. Tap Retry.',
           );
           ref.read(isGeneratingProvider.notifier).setGenerating(false);
           ref.read(conversationsProvider.notifier).reload();
+          if (isLimit) {
+            ref.read(userSubscriptionProvider.notifier).refresh();
+          }
         },
         onDone: () {
           _updateMessageById(messageId, streamedBuffer.toString(), MessageStatus.sent);

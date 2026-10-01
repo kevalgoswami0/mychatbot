@@ -47,16 +47,17 @@ class _SignupFormState extends ConsumerState<SignupForm> {
     if (!_formKey.currentState!.validate()) return;
 
     try {
+      final emailNormalized = _emailController.text.trim().toLowerCase();
       await ref.read(authProvider.notifier).signup(
             _nameController.text.trim(),
-            _emailController.text.trim(),
+            emailNormalized,
             _passwordController.text,
             _confirmPasswordController.text,
           );
       final state = ref.read(authProvider);
       if (state.hasError) {
         setState(() => _inlineError = state.error.toString().replaceAll('Exception: ', ''));
-      } else if (state.value != null) {
+      } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -66,7 +67,7 @@ class _SignupFormState extends ConsumerState<SignupForm> {
           );
           context.push(
             AppRoutes.verifyEmailPath,
-            extra: _emailController.text.trim(),
+            extra: emailNormalized,
           );
         }
       }

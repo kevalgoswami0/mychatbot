@@ -21,6 +21,18 @@ class UserSubscriptionNotifier extends AsyncNotifier<UserSubscriptionStatus> {
     return _repository.getCurrentSubscription();
   }
 
+  void resetToFree() {
+    state = const AsyncData(UserSubscriptionStatus(
+      hasSubscription: false,
+      planName: 'Free',
+      status: 'active',
+      dailyLimitSeconds: 120,
+      remainingSecondsToday: 120,
+      usedSecondsToday: 0,
+      limitReached: false,
+    ));
+  }
+
   Future<void> refresh() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() => _repository.getCurrentSubscription());

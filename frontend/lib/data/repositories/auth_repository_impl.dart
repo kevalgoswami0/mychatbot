@@ -70,6 +70,11 @@ class AuthRepositoryImpl implements AuthRepository {
           final Map<String, dynamic> data = jsonDecode(response.body);
           final accessToken = data['access_token'] as String?;
           final refreshToken = data['refresh_token'] as String?;
+
+          await _storage.clearAllChatData();
+          await _storage.saveSubscriptionStatus(null);
+          await _storage.setSubscriptionPlan('free');
+
           await _storage.saveAuthTokens(
             accessToken: accessToken,
             refreshToken: refreshToken,
@@ -224,6 +229,15 @@ class AuthRepositoryImpl implements AuthRepository {
         AppLogger.info('Signup response status: ${response.statusCode}, body: ${response.body}');
 
         if (response.statusCode >= 200 && response.statusCode < 300) {
+          // Clear any stale tokens and previous user session
+          _currentUser = null;
+          await _storage.saveAuthTokens(accessToken: null, refreshToken: null);
+          await _storage.saveUserProfile(null);
+          await _storage.saveSubscriptionStatus(null);
+          await _storage.setSubscriptionPlan('free');
+          await _storage.clearAllChatData();
+          _authController.add(null);
+
           final user = UserProfile(
             id: _uuid.v4(),
             name: name.trim(),
@@ -232,10 +246,7 @@ class AuthRepositoryImpl implements AuthRepository {
             createdAt: DateTime.now(),
           );
 
-          _currentUser = user;
-          await _storage.saveUserProfile(user);
-          _authController.add(user);
-          AppLogger.info('User signed up successfully: ${user.email}');
+          AppLogger.info('User signup initiated, awaiting OTP verification: ${user.email}');
           return user;
         } else {
           String errorMessage = 'Signup failed (${response.statusCode})';
@@ -294,7 +305,12 @@ class AuthRepositoryImpl implements AuthRepository {
 
   @override
   Future<UserProfile> continueAsGuest() async {
-    await Future.delayed(const Duration(milliseconds: 300));
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    await _storage.saveAuthTokens(accessToken: null, refreshToken: null);
+    await _storage.saveSubscriptionStatus(null);
+    await _storage.setSubscriptionPlan('free');
+    await _storage.clearAllChatData();
 
     final guestUser = UserProfile(
       id: _uuid.v4(),
@@ -313,11 +329,61 @@ class AuthRepositoryImpl implements AuthRepository {
 
   @override
   Future<void> logout() async {
-    await Future.delayed(const Duration(milliseconds: 200));
+    await Future.delayed(const Duration(milliseconds: 100));
+    _currentUser = null;
+    await _storage.saveAuthTokens(accessToken: null, refreshToken: null);
+    await _storage.saveUserProfile(null);
+    await _storage.saveSubscriptionStatus(null);
+    await _storage.setSubscriptionPlan('free');
+    await _storage.clearAllChatData();
+    _authController.add(null);
+    AppLogger.info('User logged out and session cleared');
+  }
+
+  @override
+  Future<void> deleteAccount() async {
+    final token = _storage.getAccessToken();
+
+    if (!ApiConfig.useMock && token != null && token.isNotEmpty) {
+      final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.authDeleteAccountEndpoint}');
+      AppLogger.info('Calling delete account API: $url');
+
+      try {
+        final response = await _client
+            .delete(
+              url,
+              headers: {
+                'Authorization': 'Bearer $token',
+                'accept': '*/*',
+              },
+            )
+            .timeout(ApiConfig.requestTimeout);
+
+        AppLogger.info('Delete account response: ${response.statusCode}');
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          if (response.statusCode != 404) {
+            throw Exception(_parseErrorMessage(
+              response.body,
+              'Failed to delete account (${response.statusCode})',
+            ));
+          }
+        }
+      } on TimeoutException {
+        throw Exception('Connection timed out. Please check your network connection.');
+      } on http.ClientException catch (e) {
+        AppLogger.error('ClientException during delete account: $e');
+        throw Exception('Unable to reach backend server to delete account.');
+      } catch (e) {
+        if (e is Exception) rethrow;
+        throw Exception('Delete account error: $e');
+      }
+    }
+
     _currentUser = null;
     await _storage.saveUserProfile(null);
     _authController.add(null);
-    AppLogger.info('User logged out');
+    AppLogger.info('Account deleted and session cleared');
   }
 
   @override
@@ -354,6 +420,11 @@ class AuthRepositoryImpl implements AuthRepository {
           final Map<String, dynamic> data = jsonDecode(response.body);
           final accessToken = data['access_token'] as String?;
           final refreshToken = data['refresh_token'] as String?;
+
+          await _storage.clearAllChatData();
+          await _storage.saveSubscriptionStatus(null);
+          await _storage.setSubscriptionPlan('free');
+
           if (accessToken != null) {
             await _storage.saveAuthTokens(
               accessToken: accessToken,
@@ -379,6 +450,7 @@ class AuthRepositoryImpl implements AuthRepository {
 
           _currentUser = currentUser;
           await _storage.saveUserProfile(currentUser);
+          await _storage.clearAllChatData();
           _authController.add(currentUser);
 
           return data['message'] as String? ?? 'Email verified successfully';

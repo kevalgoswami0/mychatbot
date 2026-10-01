@@ -6,7 +6,6 @@ import '../../core/router/route_names.dart';
 import '../../core/theme/text_styles.dart';
 import '../../core/utils/extensions.dart';
 import '../../core/widgets/error_state.dart';
-import '../../data/models/conversation.dart';
 import '../../data/models/subscription_plan.dart';
 import '../history/providers/history_provider.dart';
 import '../subscription/providers/subscription_provider.dart';
@@ -33,6 +32,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final ScrollController _scrollController = ScrollController();
   bool _showScrollToBottom = false;
+  bool _isLimitDialogShowing = false;
 
   @override
   void initState() {
@@ -45,9 +45,123 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
   }
 
+  void _showLimitReachedDialog() {
+    if (_isLimitDialogShowing || !mounted) return;
+    _isLimitDialogShowing = true;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        final colors = ctx.appColors;
+        return AlertDialog(
+          backgroundColor: colors.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(color: colors.primary.withValues(alpha: 0.25)),
+          ),
+          contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: colors.primary.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.workspace_premium_rounded, color: colors.primary, size: 28),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'Daily Limit Reached',
+                style: AppTextStyles.titleMedium.copyWith(
+                  color: colors.textPrimary,
+                  fontWeight: FontWeight.w700,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'You\'ve used today\'s 2-minute free limit. Upgrade to continue chatting.',
+                style: AppTextStyles.bodyMedium.copyWith(
+                  color: colors.textSecondary,
+                  height: 1.35,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actions: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () {
+                      Navigator.of(ctx).pop();
+                      _isLimitDialogShowing = false;
+                    },
+                    child: Text(
+                      'Maybe Later',
+                      style: AppTextStyles.button.copyWith(
+                        color: colors.textSecondary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: colors.primary,
+                      foregroundColor: colors.onPrimary,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 11),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSpacing.radiusSm)),
+                    ),
+                    onPressed: () {
+                      Navigator.of(ctx).pop();
+                      _isLimitDialogShowing = false;
+                      context.push(AppRoutes.subscriptionPath).then((_) {
+                        ref.read(userSubscriptionProvider.notifier).refresh();
+                      });
+                    },
+                    icon: const Icon(Icons.auto_awesome_rounded, size: 16),
+                    label: const Text(
+                      'Upgrade',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    ).then((_) => _isLimitDialogShowing = false);
+  }
+
   void _initActiveConversation() {
-    if (widget.conversationId != null) {
+    if (widget.conversationId != null && widget.conversationId!.isNotEmpty) {
       ref.read(activeConversationIdProvider.notifier).setActiveId(widget.conversationId);
+    } else {
+      ref.read(activeConversationIdProvider.notifier).setActiveId(null);
+      ref.read(messagesProvider.notifier).resetToEmpty();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.conversationId != oldWidget.conversationId) {
+      if (widget.conversationId != null && widget.conversationId!.isNotEmpty) {
+        ref.read(activeConversationIdProvider.notifier).setActiveId(widget.conversationId);
+      } else {
+        ref.read(activeConversationIdProvider.notifier).setActiveId(null);
+        ref.read(messagesProvider.notifier).resetToEmpty();
+      }
     }
   }
 
@@ -69,38 +183,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  Future<void> _ensureActiveConversation([String? prompt]) async {
-    final activeId = ref.read(activeConversationIdProvider);
-    if (activeId != null && activeId.isNotEmpty) {
-      return;
-    }
-    String initialTitle = 'New Chat';
-    if (prompt != null && prompt.trim().isNotEmpty) {
-      final clean = prompt.trim();
-      initialTitle = clean.length > 30 ? '${clean.substring(0, 30)}...' : clean;
-    }
-    try {
-      final newConv = await ref.read(conversationsProvider.notifier).createConversation(initialTitle: initialTitle);
-      ref.read(activeConversationIdProvider.notifier).setActiveId(newConv.id);
-    } catch (_) {
-      final now = DateTime.now();
-      final localConv = Conversation(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        title: initialTitle,
-        createdAt: now,
-        updatedAt: now,
-      );
-      ref.read(activeConversationIdProvider.notifier).setActiveId(localConv.id);
-    }
-  }
-
   Future<void> _handleSendMessage(String text) async {
+    if (text.trim().isEmpty) return;
+
     final userSub = ref.read(userSubscriptionProvider).value;
-    if (userSub != null && !userSub.hasSubscription && userSub.limitReached) {
-      context.push(AppRoutes.subscriptionPath);
+    final isSubscribed = userSub != null && (userSub.hasSubscription || userSub.isSubscribedAndValid);
+    final isLimitReached = !isSubscribed && (userSub?.limitReached == true);
+    if (isLimitReached) {
+      _showLimitReachedDialog();
       return;
     }
-    await _ensureActiveConversation(text);
+
     _scrollToBottom();
     await ref.read(messagesProvider.notifier).sendMessage(text);
     ref.read(userSubscriptionProvider.notifier).refresh();
@@ -113,11 +206,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _handleNewChat() {
     context.hideKeyboard();
     ref.read(activeConversationIdProvider.notifier).setActiveId(null);
-    ref.read(messagesProvider.notifier).resetToEmpty();
+    if (widget.conversationId != null) {
+      context.go(AppRoutes.chatPath);
+    }
   }
 
   void _handleSelectConversation(String id) {
+    context.hideKeyboard();
     ref.read(activeConversationIdProvider.notifier).setActiveId(id);
+    if (widget.conversationId != id) {
+      context.go('${AppRoutes.chatPath}?id=$id');
+    }
   }
 
   @override
@@ -137,9 +236,46 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final activeTitle = activeConv?.title ?? 'Nova Chat';
 
     final userSub = ref.watch(userSubscriptionProvider).value;
-    final isSubscribed = userSub?.hasSubscription == true;
-    final isLimitReached = !isSubscribed && (userSub?.limitReached == true);
+    final isSubscribed = userSub != null && (userSub.hasSubscription || userSub.isSubscribedAndValid);
+    final messages = ref.watch(messagesProvider).value ?? [];
+    final hasLimitError = messages.any((m) =>
+        m.isFailed &&
+        m.errorMessage != null &&
+        (m.errorMessage!.toLowerCase().contains('free chat limit') ||
+            m.errorMessage!.toLowerCase().contains('daily limit') ||
+            m.errorMessage!.toLowerCase().contains('limit_exceeded') ||
+            m.errorMessage!.toLowerCase().contains('2 min/day') ||
+            m.errorMessage!.toLowerCase().contains('10 min/day')));
+    final isLimitReached = !isSubscribed && ((userSub?.limitReached == true) || hasLimitError);
     final activePlanName = userSub?.planName ?? 'Free';
+
+    ref.listen(userSubscriptionProvider, (previous, next) {
+      final sub = next.value;
+      if (sub != null && (sub.hasSubscription || sub.isSubscribedAndValid)) {
+        ref.read(messagesProvider.notifier).markLimitErrorsReady();
+      } else if (sub != null && !sub.hasSubscription && sub.limitReached) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showLimitReachedDialog();
+        });
+      }
+    });
+
+    ref.listen(messagesProvider, (previous, next) {
+      final msgs = next.value ?? [];
+      final hasFailLimit = msgs.isNotEmpty &&
+          msgs.last.isFailed &&
+          msgs.last.errorMessage != null &&
+          (msgs.last.errorMessage!.toLowerCase().contains('free chat limit') ||
+              msgs.last.errorMessage!.toLowerCase().contains('daily limit') ||
+              msgs.last.errorMessage!.toLowerCase().contains('limit_exceeded') ||
+              msgs.last.errorMessage!.toLowerCase().contains('2 min/day') ||
+              msgs.last.errorMessage!.toLowerCase().contains('10 min/day'));
+      if (hasFailLimit && !isSubscribed) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showLimitReachedDialog();
+        });
+      }
+    });
 
     return Scaffold(
       key: _scaffoldKey,
@@ -154,31 +290,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         elevation: 0,
         scrolledUnderElevation: 0,
         titleSpacing: AppSpacing.md,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                activeTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppTextStyles.titleMedium.copyWith(
-                  color: colors.textPrimary,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(width: AppSpacing.xs),
-            _SubscriptionPlanDropdown(
+        title: Text(
+          activeTitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.titleMedium.copyWith(
+            color: colors.textPrimary,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        actions: [
+          Center(
+            child: _SubscriptionPlanDropdown(
               activePlanName: activePlanName,
               onOpenPlans: () => context.push(AppRoutes.subscriptionPath),
             ),
-          ],
-        ),
-        actions: [
+          ),
+          const SizedBox(width: 4),
           IconButton(
             icon: Icon(
-              Icons.menu_rounded,
+              Icons.menu_open_rounded,
               size: 24,
               color: colors.textPrimary,
             ),
@@ -228,8 +359,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ChatInputField(
                 isGenerating: isGenerating,
                 enabled: !isLimitReached,
-                disabledHint: 'Daily limit reached (10 min/day). Tap to upgrade.',
-                onDisabledTap: () => context.push(AppRoutes.subscriptionPath),
+                disabledHint: 'Daily limit reached. Tap to upgrade.',
+                onDisabledTap: _showLimitReachedDialog,
                 onSend: _handleSendMessage,
                 onStop: _handleStopGeneration,
               ),
@@ -242,45 +373,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Widget _buildLimitBanner(BuildContext context, bool isLimitReached) {
     final colors = context.appColors;
-    final messages = ref.watch(messagesProvider).value ?? [];
-    final hasLimitError = messages.any((m) =>
-        m.isFailed &&
-        m.errorMessage != null &&
-        (m.errorMessage!.toLowerCase().contains('limit') ||
-            m.errorMessage!.toLowerCase().contains('subscribe') ||
-            m.errorMessage!.toLowerCase().contains('upgrade')));
-
-    if (!isLimitReached && !hasLimitError) return const SizedBox.shrink();
+    if (!isLimitReached) return const SizedBox.shrink();
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.xs + 2),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 7),
       decoration: BoxDecoration(
-        color: colors.primary.withValues(alpha: 0.12),
-        border: Border(top: BorderSide(color: colors.primary.withValues(alpha: 0.35))),
+        color: colors.surface,
+        border: Border(
+          top: BorderSide(color: colors.primary.withValues(alpha: 0.25)),
+          bottom: BorderSide(color: colors.border.withValues(alpha: 0.5)),
+        ),
       ),
       child: Row(
         children: [
-          Icon(Icons.workspace_premium_rounded, size: 20, color: colors.primary),
+          Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: colors.primary.withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.workspace_premium_rounded, size: 16, color: colors.primary),
+          ),
           const SizedBox(width: AppSpacing.sm),
           Expanded(
             child: Text(
-              'Free chat limit reached (10 min/day). Upgrade for unlimited access.',
+              'Daily limit reached (2 min). Upgrade for unlimited chat.',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: AppTextStyles.caption.copyWith(
                 color: colors.textPrimary,
                 fontWeight: FontWeight.w600,
               ),
             ),
           ),
+          const SizedBox(width: AppSpacing.xs),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: colors.primary,
               foregroundColor: colors.onPrimary,
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm + 4, vertical: 4),
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm + 4, vertical: 5),
               visualDensity: VisualDensity.compact,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSpacing.radiusSm)),
             ),
-            onPressed: () => context.push(AppRoutes.subscriptionPath),
-            child: const Text('Upgrade', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+            onPressed: _showLimitReachedDialog,
+            child: const Text('Upgrade', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
           ),
         ],
       ),
@@ -351,7 +488,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ref.read(messagesProvider.notifier).regenerateMessage(message.id);
           },
           onRetry: () {
-            ref.read(messagesProvider.notifier).retryMessage(message.id);
+            final userSub = ref.read(userSubscriptionProvider).value;
+            final isSubscribed = userSub != null && (userSub.hasSubscription || userSub.isSubscribedAndValid);
+            final isLimitReached = !isSubscribed && (userSub?.limitReached == true);
+            if (isLimitReached) {
+              _showLimitReachedDialog();
+            } else {
+              ref.read(messagesProvider.notifier).retryMessage(message.id);
+            }
           },
           onEditPrompt: (newPrompt) {
             ref.read(messagesProvider.notifier).editUserMessageAndRegenerate(message.id, newPrompt);
@@ -378,18 +522,30 @@ class _SubscriptionPlanDropdown extends StatelessWidget {
     final isPaid = activePlanName.toLowerCase() != 'free';
 
     return PopupMenuButton<String>(
-      tooltip: 'Subscription Tier',
-      offset: const Offset(0, 36),
+      tooltip: 'Subscription Plans',
+      offset: const Offset(0, 38),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
-        side: BorderSide(color: colors.border, width: 1),
+        side: const BorderSide(color: Color(0xFFE2E8F0), width: 1),
       ),
-      color: colors.background,
-      elevation: 2,
+      color: Colors.white,
+      elevation: 6,
+      shadowColor: Colors.black.withValues(alpha: 0.15),
       onSelected: (value) {
         onOpenPlans();
       },
       itemBuilder: (context) => [
+        PopupMenuItem<String>(
+          enabled: false,
+          child: Text(
+            'SUBSCRIPTION TIER',
+            style: AppTextStyles.micro.copyWith(
+              color: const Color(0xFF64748B),
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.8,
+            ),
+          ),
+        ),
         ...SubscriptionPlan.defaultPlans.map(
           (plan) {
             final isCurrent = plan.name.toLowerCase() == activePlanName.toLowerCase();
@@ -399,10 +555,10 @@ class _SubscriptionPlanDropdown extends StatelessWidget {
                 children: [
                   Icon(
                     isCurrent
-                        ? Icons.radio_button_checked_rounded
-                        : Icons.radio_button_off_rounded,
+                        ? Icons.check_circle_rounded
+                        : Icons.radio_button_unchecked_rounded,
                     size: 16,
-                    color: isCurrent ? colors.primary : colors.textSecondary,
+                    color: isCurrent ? colors.primary : const Color(0xFF94A3B8),
                   ),
                   const SizedBox(width: AppSpacing.sm),
                   Expanded(
@@ -410,13 +566,30 @@ class _SubscriptionPlanDropdown extends StatelessWidget {
                       plan.name,
                       style: AppTextStyles.bodyMedium.copyWith(
                         fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                        color: isCurrent ? colors.primary : const Color(0xFF0F172A),
                       ),
                     ),
                   ),
-                  Text(
-                    plan.formattedPrice,
-                    style: AppTextStyles.caption.copyWith(
-                      color: colors.textSecondary,
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: isCurrent
+                          ? colors.primary.withValues(alpha: 0.12)
+                          : const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                      border: Border.all(
+                        color: isCurrent
+                            ? colors.primary.withValues(alpha: 0.3)
+                            : const Color(0xFFE2E8F0),
+                        width: 1,
+                      ),
+                    ),
+                    child: Text(
+                      plan.formattedPrice,
+                      style: AppTextStyles.micro.copyWith(
+                        color: isCurrent ? colors.primary : const Color(0xFF475569),
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
@@ -431,49 +604,60 @@ class _SubscriptionPlanDropdown extends StatelessWidget {
             children: [
               Icon(Icons.workspace_premium_rounded, size: 18, color: colors.primary),
               const SizedBox(width: AppSpacing.sm),
-              Text(
-                'View All Plans & Features',
-                style: AppTextStyles.bodyMedium.copyWith(
-                  color: colors.primary,
-                  fontWeight: FontWeight.w600,
+              Expanded(
+                child: Text(
+                  'Manage & Upgrade Plans',
+                  style: AppTextStyles.bodyMedium.copyWith(
+                    color: colors.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
+              Icon(Icons.arrow_forward_rounded, size: 16, color: colors.primary),
             ],
           ),
         ),
       ],
       child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm,
-          vertical: 4,
-        ),
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
         decoration: BoxDecoration(
-          color: isPaid ? colors.primary.withValues(alpha: 0.12) : colors.surface,
+          color: Colors.white,
           borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
           border: Border.all(
-            color: isPaid ? colors.primary : colors.border,
+            color: isPaid ? colors.primary.withValues(alpha: 0.5) : const Color(0xFFE2E8F0),
             width: 1,
           ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 3,
+              offset: const Offset(0, 1),
+            ),
+          ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (isPaid) ...[
-              Icon(Icons.auto_awesome_rounded, size: 12, color: colors.primary),
-              const SizedBox(width: 4),
-            ],
+            Icon(
+              isPaid ? Icons.auto_awesome_rounded : Icons.bolt_rounded,
+              size: 13,
+              color: isPaid ? colors.primary : const Color(0xFF64748B),
+            ),
+            const SizedBox(width: 4),
             Text(
               activePlanName,
               style: AppTextStyles.caption.copyWith(
-                color: isPaid ? colors.primary : colors.textSecondary,
+                color: isPaid ? colors.primary : const Color(0xFF1E293B),
                 fontWeight: FontWeight.w600,
+                fontSize: 11.5,
               ),
             ),
             const SizedBox(width: 2),
             Icon(
               Icons.keyboard_arrow_down_rounded,
               size: 14,
-              color: isPaid ? colors.primary : colors.textSecondary,
+              color: isPaid ? colors.primary : const Color(0xFF64748B),
             ),
           ],
         ),

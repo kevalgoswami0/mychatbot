@@ -52,9 +52,109 @@ class SettingsScreen extends ConsumerWidget {
   }
 
   Future<void> _logout(BuildContext context, WidgetRef ref) async {
-    await ref.read(authProvider.notifier).logout();
-    if (context.mounted) {
+    final colors = context.appColors;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: colors.background,
+        title: const Text('Sign Out'),
+        content: const Text('Are you sure you want to sign out of your account?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Sign Out'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && context.mounted) {
       context.go(AppRoutes.authPath);
+      await ref.read(authProvider.notifier).logout();
+    }
+  }
+
+  Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) async {
+    final colors = context.appColors;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: colors.background,
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: colors.error, size: 24),
+            const SizedBox(width: AppSpacing.sm),
+            const Expanded(child: Text('Delete Account?')),
+          ],
+        ),
+        content: const Text(
+          'Are you sure you want to permanently delete your account?\n\nThis will erase all your messages, chat history, active subscriptions, and user data from our database. This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: colors.error,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete Permanently'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !context.mounted) return;
+
+    // Show deleting feedback
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Deleting your account...'),
+          ],
+        ),
+        duration: Duration(seconds: 10),
+      ),
+    );
+
+    try {
+      await ref.read(authProvider.notifier).deleteAccount();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Your account has been deleted permanently.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        context.go(AppRoutes.authPath);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: colors.error,
+            content: Text('Failed to delete account: ${e.toString().replaceAll('Exception: ', '')}'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     }
   }
 
@@ -64,8 +164,9 @@ class SettingsScreen extends ConsumerWidget {
     final currentThemeMode = ref.watch(themeModeProvider);
     final user = ref.watch(authProvider).value;
 
-    final userName = user?.name ?? 'Guest User';
-    final userEmail = user?.email ?? 'guest@novachat.ai';
+    final isAuthenticated = user != null;
+    final userName = (user?.name != null && user!.name.trim().isNotEmpty) ? user.name : 'User';
+    final userEmail = user?.email ?? '';
 
     return Scaffold(
       backgroundColor: colors.background,
@@ -93,7 +194,13 @@ class SettingsScreen extends ConsumerWidget {
                 side: BorderSide(color: colors.border, width: 1),
               ),
               child: InkWell(
-                onTap: () => context.push(AppRoutes.profilePath),
+                onTap: () {
+                  if (isAuthenticated) {
+                    context.push(AppRoutes.profilePath);
+                  } else {
+                    context.go(AppRoutes.authPath);
+                  }
+                },
                 borderRadius: BorderRadius.circular(AppSpacing.radiusLg),
                 child: Padding(
                   padding: const EdgeInsets.all(AppSpacing.md),
@@ -106,14 +213,14 @@ class SettingsScreen extends ConsumerWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              userName,
+                              isAuthenticated ? userName : 'Not Signed In',
                               style: AppTextStyles.titleMedium.copyWith(
                                 color: colors.textPrimary,
                               ),
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              userEmail,
+                              isAuthenticated ? userEmail : 'Tap to sign in to your account',
                               style: AppTextStyles.bodyMedium.copyWith(
                                 color: colors.textSecondary,
                               ),
@@ -176,34 +283,60 @@ class SettingsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: AppSpacing.lg),
 
-            // Data & Storage Section
-            _SectionHeader(title: 'Data & Storage'),
+            // Account & Data Section
+            _SectionHeader(title: 'Account & Data'),
             Container(
               decoration: BoxDecoration(
                 color: colors.surface,
                 borderRadius: BorderRadius.circular(AppSpacing.radiusLg),
                 border: Border.all(color: colors.border, width: 1),
               ),
-              child: ListTile(
-                leading: Icon(
-                  Icons.delete_sweep_outlined,
-                  color: colors.error,
-                  size: 22,
-                ),
-                title: Text(
-                  'Clear All Conversations',
-                  style: AppTextStyles.bodyMedium.copyWith(
-                    color: colors.error,
-                    fontWeight: FontWeight.w600,
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: Icon(
+                      Icons.delete_sweep_outlined,
+                      color: colors.error,
+                      size: 22,
+                    ),
+                    title: Text(
+                      'Clear All Conversations',
+                      style: AppTextStyles.bodyMedium.copyWith(
+                        color: colors.error,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'Erase all chats and local message histories',
+                      style: AppTextStyles.caption.copyWith(
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                    onTap: () => _confirmClearAllChats(context, ref),
                   ),
-                ),
-                subtitle: Text(
-                  'Erase all chats and local message histories',
-                  style: AppTextStyles.caption.copyWith(
-                    color: colors.textSecondary,
+                  Divider(color: colors.border, height: 1),
+                  ListTile(
+                    leading: Icon(
+                      Icons.delete_forever_rounded,
+                      color: colors.error,
+                      size: 22,
+                    ),
+                    title: Text(
+                      'Delete Account',
+                      style: AppTextStyles.bodyMedium.copyWith(
+                        color: colors.error,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'Permanently remove account and data from database',
+                      style: AppTextStyles.caption.copyWith(
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                    onTap: () => _confirmDeleteAccount(context, ref),
                   ),
-                ),
-                onTap: () => _confirmClearAllChats(context, ref),
+                ],
               ),
             ),
             const SizedBox(height: AppSpacing.xl),

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/utils/logger.dart';
 import '../../../data/models/conversation.dart';
 import '../../../data/providers/repository_providers.dart';
 import '../../../domain/repositories/chat_repository.dart';
@@ -11,7 +12,13 @@ class ActiveConversationIdNotifier extends Notifier<String?> {
   String? build() => null;
 
   void setActiveId(String? id) {
+    if (state == id) return;
     state = id;
+    if (id == null || id.isEmpty) {
+      ref.read(messagesProvider.notifier).resetToEmpty();
+    } else {
+      ref.read(messagesProvider.notifier).loadConversation(id);
+    }
   }
 }
 
@@ -41,20 +48,35 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
   @override
   Future<List<Conversation>> build() async {
     _chatRepository = ref.watch(chatRepositoryProvider);
-    return _chatRepository.getConversations();
+
+    try {
+      return await _chatRepository.getConversations();
+    } catch (e, st) {
+      AppLogger.warning('ConversationsNotifier failed to load conversations: $e', stackTrace: st);
+      return const [];
+    }
+  }
+
+  void clearLocal() {
+    state = const AsyncData([]);
   }
 
   Future<void> reload() async {
     state = const AsyncLoading();
-    state = await AsyncValue.guard(() => _chatRepository.getConversations());
+    try {
+      final list = await _chatRepository.getConversations();
+      state = AsyncData(list);
+    } catch (e, st) {
+      AppLogger.warning('ConversationsNotifier reload error: $e', stackTrace: st);
+      state = const AsyncData([]);
+    }
   }
 
   Future<Conversation> createConversation({String? initialTitle}) async {
     final newConv = await _chatRepository.createConversation(initialTitle: initialTitle);
     final currentList = state.value ?? [];
     state = AsyncData([newConv, ...currentList.where((c) => c.id != newConv.id)]);
-    ref.read(activeConversationIdProvider.notifier).setActiveId(newConv.id);
-    ref.read(messagesProvider.notifier).resetToEmpty();
+    ref.read(activeConversationIdProvider.notifier).state = newConv.id;
     return newConv;
   }
 

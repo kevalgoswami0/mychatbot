@@ -113,15 +113,15 @@ class ChatRepositoryImpl implements ChatRepository {
 
   @override
   Future<List<Conversation>> getConversations() async {
-    final token = await _getValidAccessToken();
-    if (token == null || token.isEmpty) {
-      return _storage.loadConversations();
-    }
-
-    final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationsEndpoint}');
-    AppLogger.info('Fetching conversations from: $url');
-
     try {
+      final token = await _getValidAccessToken();
+      if (token == null || token.isEmpty) {
+        return _storage.loadConversations();
+      }
+
+      final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationsEndpoint}');
+      AppLogger.info('Fetching conversations from: $url');
+
       final response = await _authenticatedRequest((headers) => _client.get(url, headers: headers));
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -134,12 +134,19 @@ class ChatRepositoryImpl implements ChatRepository {
           await _storage.saveConversations(conversations);
           return conversations;
         }
+      } else if (response.statusCode == 401) {
+        AppLogger.warning('Unauthorized when fetching conversations, returning empty/cached');
+        return [];
       }
     } catch (e, st) {
       AppLogger.warning('Failed to fetch remote conversations, loading from cache: $e', stackTrace: st);
     }
 
-    return _storage.loadConversations();
+    try {
+      return _storage.loadConversations();
+    } catch (_) {
+      return const [];
+    }
   }
 
   @override
@@ -255,6 +262,8 @@ class ChatRepositoryImpl implements ChatRepository {
   @override
   Future<List<Message>> getMessages(String conversationId) async {
     if (conversationId.trim().isEmpty) return const [];
+    final localMessages = _storage.loadMessages(conversationId);
+
     final int? convIntId = int.tryParse(conversationId);
     if (convIntId != null) {
       final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationMessagesEndpoint(convIntId)}');
@@ -268,38 +277,36 @@ class ChatRepositoryImpl implements ChatRepository {
         if (response.statusCode >= 200 && response.statusCode < 300) {
           final decoded = jsonDecode(response.body);
           if (decoded is List) {
-            final messages = decoded
+            final remoteMessages = decoded
                 .map((item) => Message.fromMap(item as Map<String, dynamic>))
                 .toList();
 
-            await _storage.saveMessages(conversationId, messages);
-            return messages;
+            if (remoteMessages.isNotEmpty) {
+              await _storage.saveMessages(conversationId, remoteMessages);
+              return remoteMessages;
+            }
           }
-        } else if (response.statusCode == 404) {
-          // Empty new chat on backend
-          return _storage.loadMessages(conversationId);
         }
       } catch (e, st) {
-        AppLogger.warning('Failed to fetch remote messages, loading local: $e', stackTrace: st);
+        AppLogger.warning('Failed to fetch remote messages, using local: $e', stackTrace: st);
       }
     }
 
-    return _storage.loadMessages(conversationId);
+    return localMessages;
   }
 
-  /// Transforms text chunks into a smoothly paced token/word stream (~8ms per token)
+  /// Transforms text chunks into a smoothly paced token/word stream (~2ms per token)
   /// keeping words and markdown headers intact without flickering.
   Stream<String> _streamPaced(Stream<String> rawStream) async* {
     await for (final chunk in rawStream) {
       final matches = RegExp(r'(\s+|[^\s]+)').allMatches(chunk);
       if (matches.isEmpty) {
         yield chunk;
-        await Future.delayed(const Duration(milliseconds: 8));
       } else {
         for (final match in matches) {
           final token = match.group(0)!;
           yield token;
-          await Future.delayed(const Duration(milliseconds: 8));
+          await Future.delayed(const Duration(milliseconds: 2));
         }
       }
     }
@@ -353,9 +360,13 @@ class ChatRepositoryImpl implements ChatRepository {
       } catch (e, st) {
         AppLogger.error('WebSocket chat stream error: $e', error: e, stackTrace: st);
         final errString = e.toString().toLowerCase();
-        final isLimitError = errString.contains('limit') ||
-            errString.contains('subscribe') ||
-            errString.contains('1008');
+        final isLimitError = errString.contains('free chat limit') ||
+            errString.contains('daily limit') ||
+            errString.contains('limit_exceeded') ||
+            errString.contains('2 min/day') ||
+            errString.contains('10 min/day') ||
+            errString.contains('upgrade for unlimited') ||
+            (errString.contains('1008') && !errString.contains('rate') && !errString.contains('tpm'));
 
         // If WebSocket failed before yielding any chunk and is NOT a limit error, attempt HTTP fallback
         if (!receivedAnyChunk && !isLimitError) {
@@ -383,10 +394,14 @@ class ChatRepositoryImpl implements ChatRepository {
                   return;
                 }
               } else if (httpRes.statusCode == 403) {
-                throw Exception('Free chat limit reached (10 min/day). Please upgrade for unlimited access.');
+                throw Exception('Daily limit reached (2 min). Upgrade to continue.');
               }
             } catch (fallbackErr) {
-              if (fallbackErr.toString().contains('limit') || fallbackErr.toString().contains('upgrade')) {
+              final fbErr = fallbackErr.toString().toLowerCase();
+              if (fbErr.contains('free chat limit') ||
+                  fbErr.contains('2 min/day') ||
+                  fbErr.contains('10 min/day') ||
+                  fbErr.contains('daily limit')) {
                 rethrow;
               }
               AppLogger.warning('HTTP chat fallback failed: $fallbackErr');
@@ -396,7 +411,7 @@ class ChatRepositoryImpl implements ChatRepository {
 
         String userFriendlyError = 'Connection interrupted. Please tap to retry.';
         if (isLimitError) {
-          userFriendlyError = 'Free chat limit reached (10 min/day). Please upgrade for unlimited access.';
+          userFriendlyError = 'Daily limit reached (2 min). Upgrade to continue.';
         } else if (errString.contains('not found')) {
           userFriendlyError = 'Conversation not found. Please start a new chat.';
         }
@@ -521,16 +536,40 @@ class ChatRepositoryImpl implements ChatRepository {
       }
     }
 
-    // Remove the previous assistant response from local list
-    messages.removeAt(targetIndex);
-    await _storage.saveMessages(conversationId, messages);
-
-    // Call sendMessage stream
-    yield* sendMessage(
-      conversationId,
-      userQuery,
-      assistantMessageId: messageId,
+    final targetMessage = messages[targetIndex].copyWith(
+      content: '',
+      status: MessageStatus.streaming,
+      errorMessage: null,
     );
+    _replaceMessage(conversationId, targetMessage);
+
+    final StringBuffer fullContent = StringBuffer();
+
+    try {
+      final stream = _streamPaced(
+        _fetchRawChunks(conversationId, userQuery, targetMessage),
+      );
+
+      await for (final token in stream) {
+        fullContent.write(token);
+        yield token;
+      }
+
+      final completedMessage = targetMessage.copyWith(
+        content: fullContent.toString(),
+        status: MessageStatus.sent,
+      );
+      _replaceMessage(conversationId, completedMessage);
+      _updateConversationMeta(conversationId, fullContent.toString(), isFirst: false);
+    } catch (e) {
+      final failedMessage = targetMessage.copyWith(
+        content: fullContent.toString(),
+        status: MessageStatus.failed,
+        errorMessage: e is Exception ? e.toString().replaceFirst('Exception: ', '') : 'An error occurred',
+      );
+      _replaceMessage(conversationId, failedMessage);
+      rethrow;
+    }
   }
 
   void _replaceMessage(String conversationId, Message updatedMessage) {

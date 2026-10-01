@@ -17,6 +17,7 @@ def hash_password(password: str):
     return Password_Hash.hash(password)
 
 
+import uuid
 def verify_password(password: str, hashed_password: str):
     return Password_Hash.verify(password, hashed_password)
 
@@ -26,7 +27,8 @@ def create_access_token(user_id: int):
 
     payload = {
         "sub": str(user_id),
-        "exp": expires
+        "exp": expires,
+        "jti": str(uuid.uuid4())
     }
     token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
     return token
@@ -68,7 +70,8 @@ def create_refresh_token(user_id: int):
     payload = {
         "sub": str(user_id),
         "exp": expires,
-        "type": "refresh"
+        "type": "refresh",
+        "jti": str(uuid.uuid4())
     }
 
     token = jwt.encode(

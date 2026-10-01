@@ -22,6 +22,9 @@ abstract class AuthRepository {
   /// Sign out the current user and reset state.
   Future<void> logout();
 
+  /// Permanently delete current user account from backend database and local storage.
+  Future<void> deleteAccount();
+
   /// Verify user's email address with 6-digit OTP.
   Future<String> verifyEmail({required String email, required String otp});
 

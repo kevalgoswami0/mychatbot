@@ -181,6 +181,10 @@ def user_login(
     access_token = create_access_token(existing_user.id)
     refresh_token = create_refresh_token(existing_user.id)
 
+    db.query(models.RefreshToken).filter(
+        models.RefreshToken.user_id == existing_user.id
+    ).delete(synchronize_session=False)
+
     new_refresh_token = models.RefreshToken(
         user_id=existing_user.id,
         token=refresh_token,
@@ -224,6 +228,80 @@ def get_my_profile(
         "id": user.id,
         "name": user.name,
         "email": user.email
+    }
+
+
+@router.delete("/account")
+def delete_account(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db)
+):
+    user_id = verify_access_token(credentials)
+
+    user = db.query(models.User).filter(
+        models.User.id == user_id
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+
+    user_email = user.email
+
+    # 1. Delete all messages for user's conversations
+    user_conversations = db.query(models.Conversation).filter(
+        models.Conversation.user_id == user_id
+    ).all()
+    conv_ids = [c.id for c in user_conversations]
+    if conv_ids:
+        db.query(models.Message).filter(
+            models.Message.conversation_id.in_(conv_ids)
+        ).delete(synchronize_session=False)
+
+    # 2. Delete conversations
+    db.query(models.Conversation).filter(
+        models.Conversation.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # 3. Delete chat sessions
+    db.query(models.ChatSession).filter(
+        models.ChatSession.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # 4. Delete subscriptions
+    db.query(models.Subscription).filter(
+        models.Subscription.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # 5. Delete payment orders
+    db.query(models.PaymentOrder).filter(
+        models.PaymentOrder.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # 6. Delete refresh tokens
+    db.query(models.RefreshToken).filter(
+        models.RefreshToken.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # 7. Delete password reset tokens
+    db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # 8. Delete email OTPs associated with user email
+    if user_email:
+        db.query(models.EmailOTP).filter(
+            models.EmailOTP.email == user_email
+        ).delete(synchronize_session=False)
+
+    # 9. Delete user record
+    db.delete(user)
+    db.commit()
+
+    return {
+        "message": "Account and all associated data permanently deleted"
     }
 
 
@@ -428,7 +506,7 @@ def chat(
     if not check_chat_access(user_id, db):
         raise HTTPException(
             status_code=403,
-            detail="Free chat limit reached (10 min/day). Please upgrade for unlimited access."
+            detail="Free chat limit reached (2 min/day). Please upgrade for unlimited access."
         )
 
     conversation = db.query(models.Conversation).filter(
@@ -705,12 +783,25 @@ def verify_razorpay_payment(
             detail="Payment order not found"
         )
 
-    # 3. Prevent duplicate processing
+    # 3. Check if already processed (Duplication Protection)
     if payment_order.status == "paid":
-        raise HTTPException(
-            status_code=400,
-            detail="Payment already verified"
-        )
+        existing_sub = get_current_subscription(user_id, db)
+        if not existing_sub:
+            existing_sub = db.query(models.Subscription).filter(
+                models.Subscription.user_id == user_id,
+                models.Subscription.plan_id == payment_order.plan_id
+            ).order_by(models.Subscription.id.desc()).first()
+        plan = db.query(models.Plan).filter(models.Plan.id == payment_order.plan_id).first()
+        plan_name = plan.name if plan else "Basic"
+        return {
+            "message": "Payment already verified and subscription is active",
+            "subscription_id": existing_sub.id if existing_sub else None,
+            "plan_id": payment_order.plan_id,
+            "plan_name": plan_name,
+            "status": existing_sub.status if existing_sub else "active",
+            "start_date": existing_sub.start_date if existing_sub else None,
+            "end_date": existing_sub.end_date if existing_sub else None
+        }
 
     # 4. Make sure the plan matches
     if payment_order.plan_id != data.plan_id:
@@ -727,7 +818,7 @@ def verify_razorpay_payment(
     payload = f"{data.razorpay_order_id}|{data.razorpay_payment_id}".encode("utf-8")
     expected_signature = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
-    signature_valid = (data.razorpay_signature == expected_signature)
+    signature_valid = hmac.compare_digest(data.razorpay_signature, expected_signature)
     if not signature_valid:
         try:
             signature_valid = verify_payment(
@@ -739,12 +830,12 @@ def verify_razorpay_payment(
             signature_valid = False
 
     if not signature_valid:
-        # Fallback for synthetic test values in dev
-        if not (is_test_mode and (data.razorpay_payment_id.startswith("pay_") or data.razorpay_signature.startswith("sig_"))):
-            raise HTTPException(
-                status_code=400,
-                detail="Payment signature verification failed"
-            )
+        payment_order.status = "failed"
+        db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail="Payment signature verification failed"
+        )
 
     # 6. For live production mode only, fetch from Razorpay API
     if not is_test_mode:
@@ -787,18 +878,19 @@ def verify_razorpay_payment(
 
     # 11. Calculate subscription dates
     start_date = datetime.utcnow()
-    end_date = start_date + timedelta(days=plan.duration_days)
+    duration_days = plan.duration_days if (plan.duration_days and plan.duration_days > 0) else 30
+    end_date = start_date + timedelta(days=duration_days)
 
-    # 12. Expire existing active subscription
-    existing_subscription = db.query(
+    # 12. Expire existing active subscriptions for this user
+    existing_subscriptions = db.query(
         models.Subscription
     ).filter(
         models.Subscription.user_id == user_id,
         models.Subscription.status == "active"
-    ).first()
+    ).all()
 
-    if existing_subscription:
-        existing_subscription.status = "expired"
+    for old_sub in existing_subscriptions:
+        old_sub.status = "expired"
 
     # 13. Create new subscription
     subscription = models.Subscription(
@@ -827,34 +919,47 @@ def verify_razorpay_payment(
         "end_date": subscription.end_date
     }
 
-FREE_DAILY_LIMIT_SECONDS = 10 * 60  # 10 minutes = 600 seconds
+FREE_DAILY_LIMIT_SECONDS = 2 * 60  # 2 minutes = 120 seconds (temporary for testing)
 
 
 def get_current_subscription(user_id: int, db: Session):
-    subscription = db.query(models.Subscription).filter(
+    db.expire_all()
+    now = datetime.utcnow()
+    active_subs = db.query(models.Subscription).filter(
         models.Subscription.user_id == user_id,
         models.Subscription.status == "active"
-    ).first()
+    ).order_by(models.Subscription.id.desc()).all()
 
-    if not subscription:
-        return None
+    valid_sub = None
+    has_changes = False
 
-    # Check whether subscription has expired
-    if subscription.end_date <= datetime.utcnow():
-        subscription.status = "expired"
+    for sub in active_subs:
+        if sub.end_date and sub.end_date <= now:
+            sub.status = "expired"
+            has_changes = True
+        elif valid_sub is None:
+            valid_sub = sub
+        else:
+            # If multiple active subscriptions exist, retain the latest valid one and expire older
+            sub.status = "expired"
+            has_changes = True
+
+    if has_changes:
         db.commit()
-        return None
 
-    return subscription
+    return valid_sub
 
 
 def get_user_daily_chat_usage(user_id: int, db: Session):
     """
-    Calculates combined total chat usage (in seconds) for today across all conversations.
+    Calculates combined total chat usage (in seconds) for today across all conversations for this user.
     If the user has an active paid subscription, limit is not applicable.
     """
+    db.expire_all()
     subscription = get_current_subscription(user_id, db)
     if subscription:
+        plan = db.query(models.Plan).filter(models.Plan.id == subscription.plan_id).first()
+        plan_name = plan.name if plan else "Basic"
         return {
             "is_subscribed": True,
             "has_access": True,
@@ -862,36 +967,21 @@ def get_user_daily_chat_usage(user_id: int, db: Session):
             "used_seconds_today": 0,
             "remaining_seconds_today": FREE_DAILY_LIMIT_SECONDS,
             "limit_reached": False,
-            "plan_name": subscription.plan_id
+            "plan_name": plan_name
         }
 
     now = datetime.utcnow()
     start_of_today = datetime(now.year, now.month, now.day, 0, 0, 0)
+    end_of_today = start_of_today + timedelta(days=1)
 
-    # Fetch all sessions for this user created today
+    # Fetch all sessions for this specific user created today
     sessions = db.query(models.ChatSession).filter(
         models.ChatSession.user_id == user_id,
-        models.ChatSession.started_at >= start_of_today
+        models.ChatSession.started_at >= start_of_today,
+        models.ChatSession.started_at < end_of_today
     ).all()
 
-    total_used_seconds = 0
-    for s in sessions:
-        if s.status == "active":
-            last_time = s.ended_at or s.started_at
-            idle_gap = (now - last_time).total_seconds()
-            if idle_gap < 180:  # Active within 3 minutes
-                active_duration = int((now - s.started_at).total_seconds())
-                s.duration_seconds = max(s.duration_seconds, active_duration)
-                s.ended_at = now
-            else:
-                s.status = "closed"
-                s.ended_at = s.ended_at or s.started_at + timedelta(seconds=s.duration_seconds)
-            total_used_seconds += s.duration_seconds
-        else:
-            total_used_seconds += (s.duration_seconds or 0)
-
-    db.commit()
-
+    total_used_seconds = sum(s.duration_seconds or 0 for s in sessions)
     limit_reached = total_used_seconds >= FREE_DAILY_LIMIT_SECONDS
     remaining_seconds = max(0, FREE_DAILY_LIMIT_SECONDS - total_used_seconds)
 
@@ -906,9 +996,10 @@ def get_user_daily_chat_usage(user_id: int, db: Session):
     }
 
 
-def record_chat_activity(user_id: int, db: Session):
+def record_chat_activity(user_id: int, db: Session, active_seconds: int = 15):
     """
-    Records/updates chat activity for today across any conversation.
+    Records chat activity for today across any conversation for free users.
+    Active conversation interactions within 2 minutes accumulate into the same session.
     """
     subscription = get_current_subscription(user_id, db)
     if subscription:
@@ -916,16 +1007,18 @@ def record_chat_activity(user_id: int, db: Session):
 
     now = datetime.utcnow()
     start_of_today = datetime(now.year, now.month, now.day, 0, 0, 0)
+    end_of_today = start_of_today + timedelta(days=1)
 
     # Check current total usage
     usage = get_user_daily_chat_usage(user_id, db)
     if usage["limit_reached"]:
         return False
 
-    # Find active session today
+    # Find active session today for this user
     active_session = db.query(models.ChatSession).filter(
         models.ChatSession.user_id == user_id,
         models.ChatSession.started_at >= start_of_today,
+        models.ChatSession.started_at < end_of_today,
         models.ChatSession.status == "active"
     ).order_by(models.ChatSession.id.desc()).first()
 
@@ -934,24 +1027,24 @@ def record_chat_activity(user_id: int, db: Session):
             user_id=user_id,
             started_at=now,
             ended_at=now,
-            duration_seconds=15,  # initial credit for message exchange
+            duration_seconds=active_seconds,
             status="active"
         )
         db.add(active_session)
     else:
         last_time = active_session.ended_at or active_session.started_at
         gap = (now - last_time).total_seconds()
-        if gap < 180:
-            active_duration = int((now - active_session.started_at).total_seconds())
-            active_session.duration_seconds = max(active_session.duration_seconds + 5, active_duration)
+        if gap < 120:  # Within 2 minutes of active conversation
+            active_session.duration_seconds = (active_session.duration_seconds or 0) + active_seconds
             active_session.ended_at = now
         else:
+            # Idle gap exceeded: close older session and start fresh active session
             active_session.status = "closed"
             new_session = models.ChatSession(
                 user_id=user_id,
                 started_at=now,
                 ended_at=now,
-                duration_seconds=15,
+                duration_seconds=active_seconds,
                 status="active"
             )
             db.add(new_session)
@@ -961,6 +1054,7 @@ def record_chat_activity(user_id: int, db: Session):
 
 
 def check_chat_access(user_id: int, db: Session):
+    db.expire_all()
     usage = get_user_daily_chat_usage(user_id, db)
     return usage["has_access"]
 
@@ -989,6 +1083,7 @@ def get_subscription(
             "has_subscription": False,
             "plan_name": "Free",
             "status": "active",
+            "start_date": None,
             "end_date": None,
             "daily_limit_seconds": usage["daily_limit_seconds"],
             "used_seconds_today": usage["used_seconds_today"],
@@ -1064,7 +1159,7 @@ async def websocket_chat(
         if not check_chat_access(user_id, db):
             raise WebSocketException(
                 code=1008,
-                reason="Free chat limit reached (10 min/day). Upgrade for unlimited access."
+                reason="Free chat limit reached (2 min/day). Upgrade for unlimited access."
             )
 
         await websocket.accept()
@@ -1090,7 +1185,7 @@ async def websocket_chat(
                 await websocket.send_json({
                     "type": "error",
                     "code": "LIMIT_EXCEEDED",
-                    "message": "Free chat limit reached (10 min/day). Upgrade for unlimited access."
+                    "message": "Free chat limit reached (2 min/day). Upgrade for unlimited access."
                 })
                 break
 
@@ -1121,35 +1216,42 @@ async def websocket_chat(
                 for item in history
             ]
 
-            stream = ask_groq_with_history(messages)
-            full_response = ""
+            try:
+                stream = ask_groq_with_history(messages)
+                full_response = ""
 
-            for chunk in stream:
-                chunk_text = chunk.choices[0].delta.content
-                if chunk_text:
-                    full_response += chunk_text
-                    await websocket.send_json({
-                        "type": "chunk",
-                        "conversation_id": conversation_id,
-                        "content": chunk_text
-                    })
+                for chunk in stream:
+                    chunk_text = chunk.choices[0].delta.content
+                    if chunk_text:
+                        full_response += chunk_text
+                        await websocket.send_json({
+                            "type": "chunk",
+                            "conversation_id": conversation_id,
+                            "content": chunk_text
+                        })
 
-            # Save complete AI response in database
-            assistant_message = models.Message(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=full_response
-            )
+                # Save complete AI response in database
+                assistant_message = models.Message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=full_response
+                )
 
-            db.add(assistant_message)
-            db.commit()
-            db.refresh(assistant_message)
+                db.add(assistant_message)
+                db.commit()
+                db.refresh(assistant_message)
 
-            # Tell Flutter that the response is complete
-            await websocket.send_json({
-                "type": "message_complete",
-                "conversation_id": conversation_id
-            })
+                # Tell Flutter that the response is complete
+                await websocket.send_json({
+                    "type": "message_complete",
+                    "conversation_id": conversation_id
+                })
+            except Exception as stream_err:
+                print(f"Error streaming AI response: {stream_err}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "AI assistant is temporarily busy. Please try again."
+                })
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")

@@ -70,36 +70,60 @@ You are an educational investment guide and teacher. Your goal is to improve the
 """
 
 def ask_groq(message: str):
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": message
-            }
-        ]
-    )
-
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": message
+                }
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception:
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": message
+                }
+            ]
+        )
+        return response.choices[0].message.content
 
 
 def ask_groq_with_history(messages):
+    # Keep the most recent 10 messages to avoid token TPM limit overflows
+    recent_messages = messages[-10:] if len(messages) > 10 else messages
     messages_with_system_prompt = [
         {
             "role": "system",
             "content": SYSTEM_PROMPT
         },
-        *messages
+        *recent_messages
     ]
 
-    stream = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=messages_with_system_prompt,
-        stream=True
-    )
-
-    return stream
+    try:
+        stream = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=messages_with_system_prompt,
+            stream=True
+        )
+        return stream
+    except Exception:
+        stream = client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=messages_with_system_prompt,
+            stream=True
+        )
+        return stream

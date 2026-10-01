@@ -145,12 +145,20 @@ class SubscriptionRepositoryImpl implements SubscriptionRepository {
         final Map<String, dynamic> data = jsonDecode(response.body);
         final status = UserSubscriptionStatus.fromJson(data);
         await _storage.setSubscriptionPlan(status.planName.toLowerCase());
+        await _storage.saveSubscriptionStatus(status);
         return status;
       } else {
         AppLogger.warning('Failed to fetch subscription: ${response.statusCode}');
       }
     } catch (e, st) {
       AppLogger.error('Error fetching subscription status', error: e, stackTrace: st);
+    }
+
+    // Fallback: If network failed or server temporarily unavailable, preserve active subscription till its end date
+    final cached = _storage.loadSubscriptionStatus();
+    if (cached != null && cached.isSubscribedAndValid) {
+      AppLogger.info('Retaining valid cached subscription (${cached.planName}) valid until ${cached.endDate}');
+      return cached;
     }
 
     return const UserSubscriptionStatus(
@@ -224,17 +232,13 @@ class SubscriptionRepositoryImpl implements SubscriptionRepository {
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final Map<String, dynamic> data = jsonDecode(response.body);
-        final status = UserSubscriptionStatus(
-          hasSubscription: true,
-          planName: data['plan_name']?.toString() ?? 'Basic',
-          status: data['status']?.toString() ?? 'active',
-          subscriptionId: (data['subscription_id'] as num?)?.toInt(),
-          planId: (data['plan_id'] as num?)?.toInt() ?? planId,
-          startDate: data['start_date'] != null ? DateTime.tryParse(data['start_date'].toString()) : null,
-          endDate: data['end_date'] != null ? DateTime.tryParse(data['end_date'].toString()) : null,
-        );
+        final mergedData = Map<String, dynamic>.from(data);
+        mergedData['has_subscription'] = true;
+        mergedData['limit_reached'] = false;
+        final status = UserSubscriptionStatus.fromJson(mergedData);
 
         await _storage.setSubscriptionPlan(status.planName.toLowerCase());
+        await _storage.saveSubscriptionStatus(status);
         return status;
       } else {
         throw Exception(_parseError(response.body, 'Payment verification failed (${response.statusCode})'));

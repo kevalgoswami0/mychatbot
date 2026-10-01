@@ -6,7 +6,6 @@ import '../../../core/theme/text_styles.dart';
 import '../../../core/utils/date_formatters.dart';
 import '../../../core/utils/extensions.dart';
 import '../../../data/models/message.dart';
-import 'generating_animation.dart';
 import 'markdown_message_body.dart';
 import 'message_action_sheet.dart';
 
@@ -190,6 +189,7 @@ class _MessageBubbleState extends State<MessageBubble> {
             color: colors.textSecondary,
             tooltip: 'Share',
             onTap: () {
+              // ignore: deprecated_member_use
               Share.share(widget.message.content, subject: 'Nova Chat Response');
             },
           ),
@@ -276,9 +276,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                         )
                       // Assistant Markdown / Typing / Streaming Content
                       else ...[
-                        if (widget.message.isStreaming && widget.message.content.isEmpty)
-                          const ThinkingWaveIndicator()
-                        else if (widget.message.content.isNotEmpty)
+                        if (widget.message.content.isNotEmpty)
                           MarkdownMessageBody(
                             data: widget.message.content,
                             textColor: textColor,
@@ -289,26 +287,115 @@ class _MessageBubbleState extends State<MessageBubble> {
                       // Failed error banner & retry button
                       if (isFailed) ...[
                         const SizedBox(height: AppSpacing.xs),
-                        InkWell(
-                          onTap: widget.onRetry,
-                          borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
-                          child: Padding(
-                            padding: const EdgeInsets.all(AppSpacing.xxs),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.refresh_rounded, size: 14, color: colors.error),
-                                const SizedBox(width: AppSpacing.xxs),
-                                Text(
-                                  'Retry sending',
-                                  style: AppTextStyles.caption.copyWith(
-                                    color: colors.error,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                        Builder(
+                          builder: (context) {
+                            final errLower = (widget.message.errorMessage ?? '').toLowerCase();
+                            final isLimit = errLower.contains('limit') ||
+                                errLower.contains('2 min') ||
+                                errLower.contains('10 min') ||
+                                errLower.contains('upgrade');
+                            final isSubActive = errLower.contains('subscription active');
+
+                            final String errorLabel = isSubActive
+                                ? 'Subscription active.'
+                                : (isLimit ? 'Daily limit reached.' : 'Unable to get response.');
+
+                            final Color accentColor = isSubActive || isLimit
+                                ? colors.primary
+                                : colors.error;
+
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.sm + 2,
+                                vertical: AppSpacing.xs + 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: colors.surface,
+                                borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+                                border: Border.all(
+                                  color: accentColor.withValues(alpha: 0.35),
+                                  width: 1,
                                 ),
-                              ],
-                            ),
-                          ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.04),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 1),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    isSubActive
+                                        ? Icons.check_circle_outline_rounded
+                                        : (isLimit
+                                            ? Icons.workspace_premium_rounded
+                                            : Icons.error_outline_rounded),
+                                    size: 16,
+                                    color: accentColor,
+                                  ),
+                                  const SizedBox(width: AppSpacing.xs),
+                                  Flexible(
+                                    child: Text(
+                                      errorLabel,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: AppTextStyles.caption.copyWith(
+                                        color: colors.textPrimary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: AppSpacing.sm),
+                                  Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      onTap: widget.onRetry,
+                                      borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: AppSpacing.sm,
+                                          vertical: 5,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: colors.primary,
+                                          borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: colors.primary.withValues(alpha: 0.25),
+                                              blurRadius: 3,
+                                              offset: const Offset(0, 1),
+                                            ),
+                                          ],
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.refresh_rounded,
+                                              size: 13,
+                                              color: colors.onPrimary,
+                                            ),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              'Retry',
+                                              style: AppTextStyles.caption.copyWith(
+                                                color: colors.onPrimary,
+                                                fontWeight: FontWeight.w700,
+                                                letterSpacing: 0.2,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
                         ),
                       ],
 

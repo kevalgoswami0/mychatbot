@@ -8,7 +8,6 @@ import '../../core/utils/extensions.dart';
 import '../../core/widgets/app_text_field.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../data/models/conversation.dart';
-import '../chat/providers/chat_providers.dart';
 import 'providers/history_provider.dart';
 import 'widgets/conversation_list_item.dart';
 import 'widgets/rename_dialog.dart';
@@ -32,13 +31,11 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
 
   void _openConversation(String id) {
     ref.read(activeConversationIdProvider.notifier).setActiveId(id);
-    context.go(AppRoutes.chatPath);
+    context.go('${AppRoutes.chatPath}?id=$id');
   }
 
   void _handleNewChat() {
     ref.read(activeConversationIdProvider.notifier).setActiveId(null);
-    ref.read(messagesProvider.notifier).resetToEmpty();
-    if (!mounted) return;
     context.go(AppRoutes.chatPath);
   }
 
@@ -98,14 +95,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
             fontWeight: FontWeight.w700,
           ),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add_comment_outlined, size: 22),
-            tooltip: 'New Chat',
-            onPressed: _handleNewChat,
-          ),
-          const SizedBox(width: AppSpacing.xs),
-        ],
       ),
       body: SafeArea(
         child: Column(
@@ -149,11 +138,12 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-                error: (err, _) => Center(
-                  child: Text(
-                    'Failed to load history: $err',
-                    style: AppTextStyles.bodyMedium.copyWith(color: colors.error),
-                  ),
+                error: (err, _) => EmptyState(
+                  icon: Icons.history_rounded,
+                  title: 'No conversations yet',
+                  description: 'Start a new conversation to begin chatting with Nova Chat.',
+                  actionText: 'Start New Chat',
+                  onAction: _handleNewChat,
                 ),
                 data: (allConversations) {
                   if (allConversations.isEmpty) {

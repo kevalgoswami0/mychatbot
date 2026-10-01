@@ -43,7 +43,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
 
     try {
       await ref.read(authProvider.notifier).login(
-            _emailController.text.trim(),
+            _emailController.text.trim().toLowerCase(),
             _passwordController.text,
           );
       final state = ref.read(authProvider);

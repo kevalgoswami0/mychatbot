@@ -73,13 +73,16 @@ class _ChatInputFieldState extends State<ChatInputField> {
       padding: EdgeInsets.only(
         left: AppSpacing.md,
         right: AppSpacing.md,
-        top: AppSpacing.xs,
-        bottom: context.bottomPadding > 0 ? context.bottomPadding : AppSpacing.sm,
+        top: AppSpacing.sm,
+        bottom: context.bottomPadding > 0 ? context.bottomPadding : AppSpacing.md,
       ),
       decoration: BoxDecoration(
         color: colors.background,
         border: Border(
-          top: BorderSide(color: colors.border, width: 1),
+          top: BorderSide(
+            color: colors.border.withValues(alpha: 0.6),
+            width: 1,
+          ),
         ),
       ),
       child: Row(
@@ -95,7 +98,7 @@ class _ChatInputFieldState extends State<ChatInputField> {
                 ),
                 decoration: BoxDecoration(
                   color: isEnabled ? colors.surface : colors.surface.withValues(alpha: 0.6),
-                  borderRadius: BorderRadius.circular(AppSpacing.radiusLg),
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusXl),
                   border: Border.all(
                     color: isEnabled ? colors.border : colors.primary.withValues(alpha: 0.3),
                     width: 1,
@@ -117,7 +120,7 @@ class _ChatInputFieldState extends State<ChatInputField> {
                         ? Icon(Icons.lock_rounded, size: 18, color: colors.primary)
                         : null,
                     hintText: !isEnabled
-                        ? (widget.disabledHint ?? 'Daily limit reached (10 min/day). Subscribe to continue.')
+                        ? (widget.disabledHint ?? 'Daily limit reached. Upgrade to continue.')
                         : 'Message ${AppConstants.appName}...',
                     hintStyle: AppTextStyles.bodyMedium.copyWith(
                       color: !isEnabled
@@ -139,14 +142,14 @@ class _ChatInputFieldState extends State<ChatInputField> {
               ),
             ),
           ),
-          const SizedBox(width: AppSpacing.xs),
+          const SizedBox(width: AppSpacing.xs + 2),
 
           // Send / Stop / Upgrade button
           Padding(
             padding: const EdgeInsets.only(bottom: 2),
             child: SizedBox(
-              width: 42,
-              height: 42,
+              width: 44,
+              height: 44,
               child: Material(
                 color: widget.isGenerating
                     ? colors.error
@@ -174,7 +177,7 @@ class _ChatInputFieldState extends State<ChatInputField> {
                     child: widget.isGenerating
                         ? const Icon(
                             Icons.stop_rounded,
-                            size: 20,
+                            size: 22,
                             color: Colors.white,
                           )
                         : (!isEnabled
@@ -185,7 +188,7 @@ class _ChatInputFieldState extends State<ChatInputField> {
                               )
                             : Icon(
                                 Icons.arrow_upward_rounded,
-                                size: 20,
+                                size: 22,
                                 color: _canSend ? colors.onPrimary : colors.textSecondary,
                               )),
                   ),
