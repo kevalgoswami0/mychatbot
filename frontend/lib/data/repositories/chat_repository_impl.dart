@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+
 import '../../core/config/api_config.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/logger.dart';
@@ -12,6 +15,8 @@ import '../models/conversation.dart';
 import '../models/message.dart';
 import '../datasources/mock_chat_datasource.dart';
 
+import 'package:audioplayers/audioplayers.dart';
+
 /// Production ChatRepository connecting to FastAPI backend REST and WebSocket APIs.
 /// Features auto-refreshing JWT authentication, letter-by-letter typewriter streaming,
 /// and graceful fallback handling.
@@ -20,9 +25,9 @@ class ChatRepositoryImpl implements ChatRepository {
     required LocalStorage localStorage,
     http.Client? client,
     MockChatDatasource? mockDatasource,
-  })  : _storage = localStorage,
-        _client = client ?? http.Client(),
-        _mockDatasource = mockDatasource ?? MockChatDatasource();
+  }) : _storage = localStorage,
+       _client = client ?? http.Client(),
+       _mockDatasource = mockDatasource ?? MockChatDatasource();
 
   final LocalStorage _storage;
   final http.Client _client;
@@ -39,11 +44,17 @@ class ChatRepositoryImpl implements ChatRepository {
       if (parts.length != 3) return true;
       final payloadNormalized = base64Url.normalize(parts[1]);
       final payloadBytes = base64Url.decode(payloadNormalized);
-      final payloadJson = jsonDecode(utf8.decode(payloadBytes)) as Map<String, dynamic>;
+      final payloadJson =
+          jsonDecode(utf8.decode(payloadBytes)) as Map<String, dynamic>;
       final exp = payloadJson['exp'];
       if (exp is num) {
-        final expiryTime = DateTime.fromMillisecondsSinceEpoch(exp.toInt() * 1000, isUtc: true);
-        return DateTime.now().toUtc().isAfter(expiryTime.subtract(const Duration(seconds: 60)));
+        final expiryTime = DateTime.fromMillisecondsSinceEpoch(
+          exp.toInt() * 1000,
+          isUtc: true,
+        );
+        return DateTime.now().toUtc().isAfter(
+          expiryTime.subtract(const Duration(seconds: 60)),
+        );
       }
       return false;
     } catch (_) {
@@ -54,7 +65,10 @@ class ChatRepositoryImpl implements ChatRepository {
   /// Helper to get valid access token, auto-refreshing via POST /users/refresh if expired
   Future<String?> _getValidAccessToken({bool forceRefresh = false}) async {
     final token = _storage.getAccessToken();
-    if (!forceRefresh && token != null && token.isNotEmpty && !_isTokenExpired(token)) {
+    if (!forceRefresh &&
+        token != null &&
+        token.isNotEmpty &&
+        !_isTokenExpired(token)) {
       return token;
     }
 
@@ -62,17 +76,22 @@ class ChatRepositoryImpl implements ChatRepository {
     if (refreshToken != null && refreshToken.isNotEmpty) {
       try {
         AppLogger.info('Refreshing JWT access token...');
-        final res = await _client.post(
-          Uri.parse('${ApiConfig.baseUrl}${ApiConfig.authRefreshEndpoint}'),
-          headers: {'Content-Type': 'application/json', 'accept': '*/*'},
-          body: jsonEncode({'refresh_token': refreshToken}),
-        ).timeout(const Duration(seconds: 8));
+        final res = await _client
+            .post(
+              Uri.parse('${ApiConfig.baseUrl}${ApiConfig.authRefreshEndpoint}'),
+              headers: {'Content-Type': 'application/json', 'accept': '*/*'},
+              body: jsonEncode({'refresh_token': refreshToken}),
+            )
+            .timeout(const Duration(seconds: 8));
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
           final data = jsonDecode(res.body);
           final newToken = data['access_token'] as String?;
           if (newToken != null && newToken.isNotEmpty) {
-            await _storage.saveAuthTokens(accessToken: newToken, refreshToken: refreshToken);
+            await _storage.saveAuthTokens(
+              accessToken: newToken,
+              refreshToken: refreshToken,
+            );
             AppLogger.info('Access token refreshed successfully.');
             return newToken;
           }
@@ -103,7 +122,9 @@ class ChatRepositoryImpl implements ChatRepository {
     var response = await requestFn(headers).timeout(ApiConfig.requestTimeout);
 
     if (response.statusCode == 401) {
-      AppLogger.info('Received 401 Unauthorized. Retrying with refreshed token...');
+      AppLogger.info(
+        'Received 401 Unauthorized. Retrying with refreshed token...',
+      );
       headers = await _authHeaders(forceRefresh: true);
       response = await requestFn(headers).timeout(ApiConfig.requestTimeout);
     }
@@ -119,10 +140,14 @@ class ChatRepositoryImpl implements ChatRepository {
         return _storage.loadConversations();
       }
 
-      final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationsEndpoint}');
+      final url = Uri.parse(
+        '${ApiConfig.baseUrl}${ApiConfig.conversationsEndpoint}',
+      );
       AppLogger.info('Fetching conversations from: $url');
 
-      final response = await _authenticatedRequest((headers) => _client.get(url, headers: headers));
+      final response = await _authenticatedRequest(
+        (headers) => _client.get(url, headers: headers),
+      );
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final decoded = jsonDecode(response.body);
@@ -135,11 +160,16 @@ class ChatRepositoryImpl implements ChatRepository {
           return conversations;
         }
       } else if (response.statusCode == 401) {
-        AppLogger.warning('Unauthorized when fetching conversations, returning empty/cached');
+        AppLogger.warning(
+          'Unauthorized when fetching conversations, returning empty/cached',
+        );
         return [];
       }
     } catch (e, st) {
-      AppLogger.warning('Failed to fetch remote conversations, loading from cache: $e', stackTrace: st);
+      AppLogger.warning(
+        'Failed to fetch remote conversations, loading from cache: $e',
+        stackTrace: st,
+      );
     }
 
     try {
@@ -151,7 +181,9 @@ class ChatRepositoryImpl implements ChatRepository {
 
   @override
   Future<Conversation> createConversation({String? initialTitle}) async {
-    final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationsEndpoint}');
+    final url = Uri.parse(
+      '${ApiConfig.baseUrl}${ApiConfig.conversationsEndpoint}',
+    );
     AppLogger.info('Creating conversation on backend: $url');
 
     try {
@@ -163,17 +195,25 @@ class ChatRepositoryImpl implements ChatRepository {
         final Map<String, dynamic> data = jsonDecode(response.body);
         Conversation conversation = Conversation.fromMap(data);
 
-        if (initialTitle != null && initialTitle.isNotEmpty && initialTitle != 'New Chat') {
+        if (initialTitle != null &&
+            initialTitle.isNotEmpty &&
+            initialTitle != 'New Chat') {
           await renameConversation(conversation.id, initialTitle);
           conversation = conversation.copyWith(title: initialTitle);
         }
 
         final currentList = _storage.loadConversations();
-        await _storage.saveConversations([conversation, ...currentList.where((c) => c.id != conversation.id)]);
+        await _storage.saveConversations([
+          conversation,
+          ...currentList.where((c) => c.id != conversation.id),
+        ]);
         return conversation;
       }
     } catch (e, st) {
-      AppLogger.error('Backend createConversation failed, falling back to local: $e', stackTrace: st);
+      AppLogger.error(
+        'Backend createConversation failed, falling back to local: $e',
+        stackTrace: st,
+      );
     }
 
     // Local fallback: use timestamp integer string so path parameters in backend never error with 422
@@ -197,11 +237,15 @@ class ChatRepositoryImpl implements ChatRepository {
   Future<void> deleteConversation(String id) async {
     final int? convIntId = int.tryParse(id);
     if (convIntId != null) {
-      final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationDetailEndpoint(convIntId)}');
+      final url = Uri.parse(
+        '${ApiConfig.baseUrl}${ApiConfig.conversationDetailEndpoint(convIntId)}',
+      );
       AppLogger.info('Deleting conversation from backend: $url');
 
       try {
-        await _authenticatedRequest((headers) => _client.delete(url, headers: headers));
+        await _authenticatedRequest(
+          (headers) => _client.delete(url, headers: headers),
+        );
       } catch (e) {
         AppLogger.warning('Failed to delete conversation on backend: $e');
       }
@@ -215,11 +259,15 @@ class ChatRepositoryImpl implements ChatRepository {
 
   @override
   Future<void> renameConversation(String id, String title) async {
-    final trimmedTitle = title.trim().isEmpty ? 'Untitled Conversation' : title.trim();
+    final trimmedTitle = title.trim().isEmpty
+        ? 'Untitled Conversation'
+        : title.trim();
     final int? convIntId = int.tryParse(id);
 
     if (convIntId != null) {
-      final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationDetailEndpoint(convIntId)}');
+      final url = Uri.parse(
+        '${ApiConfig.baseUrl}${ApiConfig.conversationDetailEndpoint(convIntId)}',
+      );
       AppLogger.info('Renaming conversation on backend: $url');
 
       try {
@@ -238,10 +286,7 @@ class ChatRepositoryImpl implements ChatRepository {
     final currentList = _storage.loadConversations();
     final updatedList = currentList.map((c) {
       if (c.id == id) {
-        return c.copyWith(
-          title: trimmedTitle,
-          updatedAt: DateTime.now(),
-        );
+        return c.copyWith(title: trimmedTitle, updatedAt: DateTime.now());
       }
       return c;
     }).toList();
@@ -266,7 +311,9 @@ class ChatRepositoryImpl implements ChatRepository {
 
     final int? convIntId = int.tryParse(conversationId);
     if (convIntId != null) {
-      final url = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.conversationMessagesEndpoint(convIntId)}');
+      final url = Uri.parse(
+        '${ApiConfig.baseUrl}${ApiConfig.conversationMessagesEndpoint(convIntId)}',
+      );
       AppLogger.info('Fetching messages from: $url');
 
       try {
@@ -288,7 +335,10 @@ class ChatRepositoryImpl implements ChatRepository {
           }
         }
       } catch (e, st) {
-        AppLogger.warning('Failed to fetch remote messages, using local: $e', stackTrace: st);
+        AppLogger.warning(
+          'Failed to fetch remote messages, using local: $e',
+          stackTrace: st,
+        );
       }
     }
 
@@ -319,6 +369,7 @@ class ChatRepositoryImpl implements ChatRepository {
     Message assistantPlaceholder,
   ) async* {
     final token = await _getValidAccessToken();
+    final AudioPlayer audioPlayer = AudioPlayer();
 
     // 1. WebSocket Streaming (FastAPI /users/ws/chat/{id})
     if (token != null && token.isNotEmpty) {
@@ -335,11 +386,36 @@ class ChatRepositoryImpl implements ChatRepository {
         await channel.ready;
 
         // Send message JSON payload
-        channel.sink.add(jsonEncode({'message': text.trim()}));
+
+        channel.sink.add(
+          jsonEncode({'message': text.trim(), 'language': 'en'}),
+        );
+
         AppLogger.info('WebSocket prompt sent, awaiting streaming chunks...');
 
         await for (final rawMsg in channel.stream) {
+          // Handle binary WAV audio
+          if (rawMsg is List<int>) {
+            AppLogger.info('Received WAV audio: ${rawMsg.length} bytes');
+
+            try {
+              await audioPlayer.play(BytesSource(Uint8List.fromList(rawMsg)));
+
+              AppLogger.info('WAV audio playback started');
+            } catch (e, st) {
+              AppLogger.error(
+                'WAV playback failed: $e',
+                error: e,
+                stackTrace: st,
+              );
+            }
+
+            continue;
+          }
+
+          // Handle JSON messages
           final Map<String, dynamic> data = jsonDecode(rawMsg.toString());
+
           final type = data['type'] as String?;
 
           if (type == 'chunk') {
@@ -358,20 +434,29 @@ class ChatRepositoryImpl implements ChatRepository {
         }
         return;
       } catch (e, st) {
-        AppLogger.error('WebSocket chat stream error: $e', error: e, stackTrace: st);
+        AppLogger.error(
+          'WebSocket chat stream error: $e',
+          error: e,
+          stackTrace: st,
+        );
         final errString = e.toString().toLowerCase();
-        final isLimitError = errString.contains('free chat limit') ||
+        final isLimitError =
+            errString.contains('free chat limit') ||
             errString.contains('daily limit') ||
             errString.contains('limit_exceeded') ||
             errString.contains('2 min/day') ||
             errString.contains('10 min/day') ||
             errString.contains('upgrade for unlimited') ||
-            (errString.contains('1008') && !errString.contains('rate') && !errString.contains('tpm'));
+            (errString.contains('1008') &&
+                !errString.contains('rate') &&
+                !errString.contains('tpm'));
 
         // If WebSocket failed before yielding any chunk and is NOT a limit error, attempt HTTP fallback
         if (!receivedAnyChunk && !isLimitError) {
           AppLogger.info('Attempting HTTP fallback chat endpoint...');
-          final httpUrl = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.chatHttpEndpoint}');
+          final httpUrl = Uri.parse(
+            '${ApiConfig.baseUrl}${ApiConfig.chatHttpEndpoint}',
+          );
           final int? convIntId = int.tryParse(conversationId);
           if (convIntId != null) {
             try {
@@ -394,7 +479,9 @@ class ChatRepositoryImpl implements ChatRepository {
                   return;
                 }
               } else if (httpRes.statusCode == 403) {
-                throw Exception('Daily limit reached (2 min). Upgrade to continue.');
+                throw Exception(
+                  'Daily limit reached (2 min). Upgrade to continue.',
+                );
               }
             } catch (fallbackErr) {
               final fbErr = fallbackErr.toString().toLowerCase();
@@ -409,11 +496,14 @@ class ChatRepositoryImpl implements ChatRepository {
           }
         }
 
-        String userFriendlyError = 'Connection interrupted. Please tap to retry.';
+        String userFriendlyError =
+            'Connection interrupted. Please tap to retry.';
         if (isLimitError) {
-          userFriendlyError = 'Daily limit reached (2 min). Upgrade to continue.';
+          userFriendlyError =
+              'Daily limit reached (2 min). Upgrade to continue.';
         } else if (errString.contains('not found')) {
-          userFriendlyError = 'Conversation not found. Please start a new chat.';
+          userFriendlyError =
+              'Conversation not found. Please start a new chat.';
         }
 
         throw Exception(userFriendlyError);
@@ -453,7 +543,11 @@ class ChatRepositoryImpl implements ChatRepository {
     await _storage.saveMessages(conversationId, messages);
 
     // 2. Update conversation title if first message
-    _updateConversationMeta(conversationId, text.trim(), isFirst: messages.length <= 1);
+    _updateConversationMeta(
+      conversationId,
+      text.trim(),
+      isFirst: messages.length <= 1,
+    );
 
     // 3. Create initial empty assistant message placeholder
     final effectiveAssistantMsgId = assistantMessageId ?? _uuid.v4();
@@ -487,14 +581,22 @@ class ChatRepositoryImpl implements ChatRepository {
         status: MessageStatus.sent,
       );
       _replaceMessage(conversationId, completedMessage);
-      _updateConversationMeta(conversationId, fullContent.toString(), isFirst: false);
+      _updateConversationMeta(
+        conversationId,
+        fullContent.toString(),
+        isFirst: false,
+      );
     } catch (e) {
       final failedMessage = assistantPlaceholder.copyWith(
         content: fullContent.toString().isNotEmpty
             ? fullContent.toString()
-            : (e is Exception ? e.toString().replaceFirst('Exception: ', '') : 'An error occurred'),
+            : (e is Exception
+                  ? e.toString().replaceFirst('Exception: ', '')
+                  : 'An error occurred'),
         status: MessageStatus.failed,
-        errorMessage: e is Exception ? e.toString().replaceFirst('Exception: ', '') : 'An error occurred',
+        errorMessage: e is Exception
+            ? e.toString().replaceFirst('Exception: ', '')
+            : 'An error occurred',
       );
       _replaceMessage(conversationId, failedMessage);
       rethrow;
@@ -502,7 +604,10 @@ class ChatRepositoryImpl implements ChatRepository {
   }
 
   @override
-  Future<void> saveMessages(String conversationId, List<Message> messages) async {
+  Future<void> saveMessages(
+    String conversationId,
+    List<Message> messages,
+  ) async {
     await _storage.saveMessages(conversationId, messages);
   }
 
@@ -523,7 +628,10 @@ class ChatRepositoryImpl implements ChatRepository {
   }
 
   @override
-  Stream<String> regenerateMessage(String conversationId, String messageId) async* {
+  Stream<String> regenerateMessage(
+    String conversationId,
+    String messageId,
+  ) async* {
     final messages = _storage.loadMessages(conversationId);
     final targetIndex = messages.indexWhere((m) => m.id == messageId);
     if (targetIndex == -1) return;
@@ -560,12 +668,18 @@ class ChatRepositoryImpl implements ChatRepository {
         status: MessageStatus.sent,
       );
       _replaceMessage(conversationId, completedMessage);
-      _updateConversationMeta(conversationId, fullContent.toString(), isFirst: false);
+      _updateConversationMeta(
+        conversationId,
+        fullContent.toString(),
+        isFirst: false,
+      );
     } catch (e) {
       final failedMessage = targetMessage.copyWith(
         content: fullContent.toString(),
         status: MessageStatus.failed,
-        errorMessage: e is Exception ? e.toString().replaceFirst('Exception: ', '') : 'An error occurred',
+        errorMessage: e is Exception
+            ? e.toString().replaceFirst('Exception: ', '')
+            : 'An error occurred',
       );
       _replaceMessage(conversationId, failedMessage);
       rethrow;
@@ -581,19 +695,29 @@ class ChatRepositoryImpl implements ChatRepository {
     }
   }
 
-  void _updateConversationMeta(String conversationId, String lastText, {required bool isFirst}) {
+  void _updateConversationMeta(
+    String conversationId,
+    String lastText, {
+    required bool isFirst,
+  }) {
     final conversations = _storage.loadConversations();
     final idx = conversations.indexWhere((c) => c.id == conversationId);
     if (idx != -1) {
       final existing = conversations[idx];
       String newTitle = existing.title;
-      if (isFirst || existing.title == 'New Conversation' || existing.title == 'New Chat') {
-        newTitle = lastText.length > 32 ? '${lastText.substring(0, 32)}...' : lastText;
+      if (isFirst ||
+          existing.title == 'New Conversation' ||
+          existing.title == 'New Chat') {
+        newTitle = lastText.length > 32
+            ? '${lastText.substring(0, 32)}...'
+            : lastText;
       }
 
       conversations[idx] = existing.copyWith(
         title: newTitle,
-        lastMessage: lastText.length > 60 ? '${lastText.substring(0, 60)}...' : lastText,
+        lastMessage: lastText.length > 60
+            ? '${lastText.substring(0, 60)}...'
+            : lastText,
         updatedAt: DateTime.now(),
         messageCount: existing.messageCount + 1,
       );

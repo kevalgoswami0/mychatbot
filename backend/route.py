@@ -1,6 +1,8 @@
 import os
 import hmac
 import hashlib
+import asyncio
+import re
 import jwt
 from security import SECRET_KEY,ALGORITHM
 from schema import VerifyPaymentRequest
@@ -9,11 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException , WebSocket,WebSocketDisco
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from email_service import send_email
-
+from fastapi.responses import FileResponse
+import uuid
+from tts_service import generate_speech
 from payment_service import create_razorpay_order,verify_payment,get_payment
 import random
 from datetime import datetime, timedelta
-
+from tts_service import generate_speech
 
 from database import get_db
 import models
@@ -1135,6 +1139,25 @@ def get_plans(
         ]
     }
 
+def extract_complete_sentence(buffer: str):
+    """
+    Returns:
+    (complete_sentence, remaining_buffer)
+
+    If there is no complete sentence yet:
+    (None, buffer)
+    """
+
+    match = re.search(r"(.+?[.!?।\n])(?:\s+|$)", buffer, re.DOTALL)
+
+    if match:
+        sentence = match.group(1).strip()
+        remaining = buffer[match.end():].strip()
+
+        if sentence:
+            return sentence, remaining
+
+    return None, buffer
 
 @router.websocket("/ws/chat/{conversation_id}")
 async def websocket_chat(
@@ -1172,7 +1195,9 @@ async def websocket_chat(
 
         while True:
             data = await websocket.receive_json()
+
             message = data.get("message")
+            language = data.get("language", "en")
 
             if not message:
                 await websocket.send_json({
@@ -1217,20 +1242,28 @@ async def websocket_chat(
             ]
 
             try:
+                # Start Groq streaming
                 stream = ask_groq_with_history(messages)
+
                 full_response = ""
 
                 for chunk in stream:
-                    chunk_text = chunk.choices[0].delta.content
-                    if chunk_text:
-                        full_response += chunk_text
-                        await websocket.send_json({
-                            "type": "chunk",
-                            "conversation_id": conversation_id,
-                            "content": chunk_text
-                        })
 
-                # Save complete AI response in database
+                    chunk_text = chunk.choices[0].delta.content
+
+                    if not chunk_text:
+                        continue
+
+                    full_response += chunk_text
+
+                    # Send text chunk immediately
+                    await websocket.send_json({
+                        "type": "chunk",
+                        "conversation_id": conversation_id,
+                        "content": chunk_text
+                    })
+
+                # Save complete AI response
                 assistant_message = models.Message(
                     conversation_id=conversation_id,
                     role="assistant",
@@ -1241,19 +1274,88 @@ async def websocket_chat(
                 db.commit()
                 db.refresh(assistant_message)
 
-                # Tell Flutter that the response is complete
+                # Generate ONE WAV after complete response
+                audio_filename = f"{uuid.uuid4()}.wav"
+                audio_path = os.path.join(
+                    "audio",
+                    audio_filename
+                )
+
+                os.makedirs(
+                    "audio",
+                    exist_ok=True
+                )
+
+                try:
+                    await generate_speech(
+                        text=full_response,
+                        output_file=audio_path,
+                        language=language
+                    )
+
+                    with open(
+                        audio_path,
+                        "rb"
+                    ) as audio_file:
+
+                        audio_data = audio_file.read()
+
+                    await websocket.send_json({
+                        "type": "audio_start",
+                        "conversation_id": conversation_id,
+                        "format": "wav"
+                    })
+
+                    await websocket.send_bytes(audio_data)
+
+                finally:
+
+                    if os.path.exists(audio_path):
+                        os.remove(audio_path)
+
+                # Tell Flutter response is complete
                 await websocket.send_json({
                     "type": "message_complete",
                     "conversation_id": conversation_id
                 })
+
             except Exception as stream_err:
-                print(f"Error streaming AI response: {stream_err}")
+
+                print(
+                    f"Error streaming AI response: {stream_err}"
+                )
+
                 await websocket.send_json({
                     "type": "error",
                     "message": "AI assistant is temporarily busy. Please try again."
                 })
 
     except WebSocketDisconnect:
+
         print("WebSocket disconnected")
+@router.post("/tts")
+async def text_to_speech(text: str):
 
+    filename = f"{uuid.uuid4()}.wav"
+    output_file = os.path.join("audio", filename)
 
+    os.makedirs("audio", exist_ok=True)
+
+    try:
+        await generate_speech(
+            text=text,
+            output_file=output_file,
+            language="en"
+        )
+
+        return FileResponse(
+            path=output_file,
+            media_type="audio/wav",
+            filename=filename
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
