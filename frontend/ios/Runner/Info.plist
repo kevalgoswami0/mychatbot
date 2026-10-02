@@ -66,5 +66,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Microphone permission is required for voice conversation with the AI.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Speech recognition is required to listen to your voice during AI voice chat.</string>
 </dict>
 </plist>

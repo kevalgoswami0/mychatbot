@@ -203,6 +203,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     await ref.read(messagesProvider.notifier).stopGeneration();
   }
 
+  void _handleOpenVoiceCall() {
+    context.hideKeyboard();
+    final userSub = ref.read(userSubscriptionProvider).value;
+    final isSubscribed = userSub != null &&
+        (userSub.hasSubscription || userSub.isSubscribedAndValid);
+    final isLimitReached = !isSubscribed && (userSub?.limitReached == true);
+    if (isLimitReached) {
+      _showLimitReachedDialog();
+      return;
+    }
+
+    final activeId = ref.read(activeConversationIdProvider);
+    final route = activeId != null && activeId.isNotEmpty
+        ? '${AppRoutes.liveVoicePath}?id=$activeId'
+        : AppRoutes.liveVoicePath;
+
+    context.push(route).then((_) {
+      final currentActiveId = ref.read(activeConversationIdProvider);
+      if (currentActiveId != null && currentActiveId.isNotEmpty) {
+        ref.read(messagesProvider.notifier).loadConversation(currentActiveId);
+      }
+      ref.read(conversationsProvider.notifier).reload();
+      ref.read(userSubscriptionProvider.notifier).refresh();
+    });
+  }
+
   void _handleNewChat() {
     context.hideKeyboard();
     ref.read(activeConversationIdProvider.notifier).setActiveId(null);
@@ -363,6 +389,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 onDisabledTap: _showLimitReachedDialog,
                 onSend: _handleSendMessage,
                 onStop: _handleStopGeneration,
+                onVoiceTap: _handleOpenVoiceCall,
               ),
             ],
           ),

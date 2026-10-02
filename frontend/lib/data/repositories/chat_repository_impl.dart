@@ -14,8 +14,7 @@ import '../datasources/local_storage.dart';
 import '../models/conversation.dart';
 import '../models/message.dart';
 import '../datasources/mock_chat_datasource.dart';
-
-import 'package:audioplayers/audioplayers.dart';
+import '../../features/chat/voice/services/voice_audio_player_service.dart';
 
 /// Production ChatRepository connecting to FastAPI backend REST and WebSocket APIs.
 /// Features auto-refreshing JWT authentication, letter-by-letter typewriter streaming,
@@ -369,7 +368,6 @@ class ChatRepositoryImpl implements ChatRepository {
     Message assistantPlaceholder,
   ) async* {
     final token = await _getValidAccessToken();
-    final AudioPlayer audioPlayer = AudioPlayer();
 
     // 1. WebSocket Streaming (FastAPI /users/ws/chat/{id})
     if (token != null && token.isNotEmpty) {
@@ -394,20 +392,24 @@ class ChatRepositoryImpl implements ChatRepository {
         AppLogger.info('WebSocket prompt sent, awaiting streaming chunks...');
 
         await for (final rawMsg in channel.stream) {
-          // Handle binary WAV audio
+          // Handle binary WAV audio (only when live voice call screen is active)
           if (rawMsg is List<int>) {
-            AppLogger.info('Received WAV audio: ${rawMsg.length} bytes');
+            if (VoiceAudioPlayerService.instance.isVoiceSessionActive) {
+              final bytes = Uint8List.fromList(rawMsg);
+              AppLogger.info('Received WAV audio: ${bytes.length} bytes for active voice screen');
 
-            try {
-              await audioPlayer.play(BytesSource(Uint8List.fromList(rawMsg)));
-
-              AppLogger.info('WAV audio playback started');
-            } catch (e, st) {
-              AppLogger.error(
-                'WAV playback failed: $e',
-                error: e,
-                stackTrace: st,
-              );
+              try {
+                await VoiceAudioPlayerService.instance.enqueue(bytes);
+                AppLogger.info('WAV audio playback queued');
+              } catch (e, st) {
+                AppLogger.error(
+                  'WAV playback failed: $e',
+                  error: e,
+                  stackTrace: st,
+                );
+              }
+            } else {
+              AppLogger.info('Discarding audio bytes in standard chat screen');
             }
 
             continue;
@@ -617,6 +619,7 @@ class ChatRepositoryImpl implements ChatRepository {
       _activeWsChannel?.sink.close();
       _activeWsChannel = null;
       _mockDatasource.stopGeneration();
+      await VoiceAudioPlayerService.instance.stop();
     } catch (_) {}
   }
 

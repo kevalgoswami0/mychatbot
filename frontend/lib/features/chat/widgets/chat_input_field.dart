@@ -15,6 +15,7 @@ class ChatInputField extends StatefulWidget {
     this.enabled = true,
     this.disabledHint,
     this.onDisabledTap,
+    this.onVoiceTap,
   });
 
   final ValueChanged<String> onSend;
@@ -23,6 +24,7 @@ class ChatInputField extends StatefulWidget {
   final bool enabled;
   final String? disabledHint;
   final VoidCallback? onDisabledTap;
+  final VoidCallback? onVoiceTap;
 
   @override
   State<ChatInputField> createState() => _ChatInputFieldState();
@@ -144,7 +146,7 @@ class _ChatInputFieldState extends State<ChatInputField> {
           ),
           const SizedBox(width: AppSpacing.xs + 2),
 
-          // Send / Stop / Upgrade button
+          // Send / Voice Call / Stop / Upgrade button
           Padding(
             padding: const EdgeInsets.only(bottom: 2),
             child: SizedBox(
@@ -155,14 +157,18 @@ class _ChatInputFieldState extends State<ChatInputField> {
                     ? colors.error
                     : (!isEnabled
                         ? colors.primary
-                        : (_canSend ? colors.primary : colors.surface)),
+                        : (_canSend
+                            ? colors.primary
+                            : colors.primary.withValues(alpha: 0.12))),
                 shape: CircleBorder(
                   side: BorderSide(
                     color: widget.isGenerating
                         ? colors.error
                         : (!isEnabled
                             ? colors.primary
-                            : (_canSend ? colors.primary : colors.border)),
+                            : (_canSend
+                                ? colors.primary
+                                : colors.primary.withValues(alpha: 0.4))),
                     width: 1,
                   ),
                 ),
@@ -172,7 +178,7 @@ class _ChatInputFieldState extends State<ChatInputField> {
                       ? widget.onStop
                       : (!isEnabled
                           ? widget.onDisabledTap
-                          : (_canSend ? _submit : null)),
+                          : (_canSend ? _submit : widget.onVoiceTap)),
                   child: Center(
                     child: widget.isGenerating
                         ? const Icon(
@@ -186,10 +192,23 @@ class _ChatInputFieldState extends State<ChatInputField> {
                                 size: 18,
                                 color: Colors.white,
                               )
-                            : Icon(
-                                Icons.arrow_upward_rounded,
-                                size: 22,
-                                color: _canSend ? colors.onPrimary : colors.textSecondary,
+                            : AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 200),
+                                transitionBuilder: (child, animation) =>
+                                    ScaleTransition(scale: animation, child: child),
+                                child: _canSend
+                                    ? Icon(
+                                        Icons.arrow_upward_rounded,
+                                        key: const ValueKey('send_icon'),
+                                        size: 22,
+                                        color: colors.onPrimary,
+                                      )
+                                    : Icon(
+                                        Icons.graphic_eq_rounded,
+                                        key: const ValueKey('voice_call_icon'),
+                                        size: 22,
+                                        color: colors.primary,
+                                      ),
                               )),
                   ),
                 ),

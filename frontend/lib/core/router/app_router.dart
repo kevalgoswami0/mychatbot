@@ -10,6 +10,7 @@ import '../../features/auth/reset_password_screen.dart';
 import '../../features/auth/verify_email_screen.dart';
 import '../../features/auth/verify_reset_otp_screen.dart';
 import '../../features/chat/chat_screen.dart';
+import '../../features/chat/voice/live_voice_chat_screen.dart';
 import '../../features/history/history_screen.dart';
 import '../../features/onboarding/onboarding_screen.dart';
 import '../../features/profile/profile_screen.dart';
@@ -230,6 +231,44 @@ final routerProvider = Provider<GoRouter>((ref) {
               key: ValueKey('chat_${user?.id ?? "unauth"}_${convId ?? "new"}'),
               conversationId: convId,
             ),
+          );
+        },
+      ),
+
+      // Live Voice Chat Screen (Dedicated voice call interface with modern scale+fade transition)
+      GoRoute(
+        path: AppRoutes.liveVoicePath,
+        name: AppRoutes.liveVoice,
+        pageBuilder: (context, state) {
+          final convId = state.uri.queryParameters['id'];
+          return CustomTransitionPage<void>(
+            key: state.pageKey,
+            transitionDuration: const Duration(milliseconds: 320),
+            reverseTransitionDuration: const Duration(milliseconds: 260),
+            child: LiveVoiceChatScreen(conversationId: convId),
+            transitionsBuilder: (context, animation, secondaryAnimation, child) {
+              final curved = CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeOutCubic,
+                reverseCurve: Curves.easeInCubic,
+              );
+              final scaleAnimation = Tween<double>(
+                begin: 0.90,
+                end: 1.0,
+              ).animate(curved);
+              final fadeAnimation = Tween<double>(
+                begin: 0.0,
+                end: 1.0,
+              ).animate(curved);
+
+              return FadeTransition(
+                opacity: fadeAnimation,
+                child: ScaleTransition(
+                  scale: scaleAnimation,
+                  child: child,
+                ),
+              );
+            },
           );
         },
       ),
